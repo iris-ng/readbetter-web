@@ -1,0 +1,71 @@
+/* Collapsible left rail. Hover the edge to peek (overlay); pin to dock (reserves width via App). */
+.rb-rail-root { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+.rb-rail-edge { position: absolute; top: 0; left: 0; width: 14px; height: 100%; z-index: 41; pointer-events: auto; }
+.rb-rail-edge::after {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 4px; height: 54px; border-radius: 0 4px 4px 0; background: var(--accent);
+  opacity: .35; transition: opacity .15s ease;
+}
+.rb-rail-edge:hover::after { opacity: .7; }
+
+.rb-rail-backdrop {
+  position: absolute; inset: 0; z-index: 42; background: rgba(0,0,0,0);
+  transition: background .18s ease; pointer-events: none;
+}
+.rb-rail {
+  position: absolute; top: 0; left: 0; height: 100%; width: var(--rb-rail-w, 236px); z-index: 43;
+  transform: translateX(-100%); transition: transform .2s cubic-bezier(.2,.7,.2,1);
+  background: var(--surface); border-right: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; padding: 10px 8px; pointer-events: auto;
+}
+/* peek on hover of the edge or the rail itself */
+.rb-rail-edge:hover ~ .rb-rail,
+.rb-rail:hover { transform: translateX(0); }
+.rb-rail-edge:hover ~ .rb-rail-backdrop,
+.rb-rail:hover ~ .rb-rail-backdrop { background: rgba(0,0,0,0.10); }
+/* while resizing: hold open, kill transitions */
+.rb-rail-root[data-resizing] .rb-rail { transform: translateX(0); transition: none; }
+.rb-rail-root[data-resizing] .rb-rail-backdrop { transition: none; }
+/* docked (pinned): always open, no shadow, no dim (App reserves the width) */
+.rb-rail-root[data-pinned] .rb-rail { transform: translateX(0); box-shadow: none; }
+.rb-rail-root[data-pinned] .rb-rail-edge { display: none; }
+.rb-rail-root[data-pinned] .rb-rail-backdrop { background: rgba(0,0,0,0) !important; }
+
+.rb-rail-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 8px 8px; }
+.rb-rail-head .rb-rail-title { font: var(--weight-semibold) 11px var(--font-sans); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.rb-rail-pin { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; padding: 3px 6px; border-radius: 6px; }
+.rb-rail-pin:hover { background: var(--surface-2); color: var(--fg); }
+.rb-rail-root[data-pinned] .rb-rail-pin { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+.rb-rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.rb-rail-item {
+  position: relative; display: flex; align-items: center; gap: 9px; padding: 7px 6px 7px 12px;
+  border-radius: 8px; min-width: 0;
+}
+.rb-rail-item:hover { background: var(--surface-2); }
+.rb-rail-item > .rb-rail-open {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; border: none; background: transparent;
+  cursor: pointer; color: var(--fg); font: var(--weight-medium) 13px var(--font-sans); text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rb-rail-glyph {
+  width: 20px; height: 20px; flex: 0 0 auto; border-radius: 5px; display: flex; align-items: center;
+  justify-content: center; font: var(--weight-semibold) 11px var(--font-sans); background: var(--surface-2); color: var(--muted);
+}
+.rb-rail-item[data-active] > .rb-rail-open { color: var(--fg); }
+.rb-rail-item[data-pane-index] { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.rb-rail-item[data-pane-index]::before {
+  content: ""; position: absolute; left: 3px; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--accent);
+}
+.rb-rail-item[data-pane-index] .rb-rail-glyph { background: color-mix(in srgb, var(--accent) 20%, var(--surface)); color: var(--accent); }
+.rb-rail-item[data-parked] > .rb-rail-open { color: var(--muted); }
+.rb-rail-close { border: none; background: transparent; color: var(--muted); cursor: pointer; padding: 0 4px; display: inline-flex; opacity: 0; }
+.rb-rail-item:hover .rb-rail-close { opacity: 1; }
+
+.rb-rail-foot { margin-top: auto; }
+.rb-rail-sep { height: 1px; background: var(--border); margin: 8px 6px; }
+.rb-rail-new { color: var(--accent); font: var(--weight-semibold) 13px var(--font-sans); }
+
+.rb-rail-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; z-index: 44; cursor: col-resize; touch-action: none; }
+.rb-rail-resizer::after { content: ""; position: absolute; left: 2px; top: 0; width: 1px; height: 100%; background: transparent; transition: background .12s ease; }
+.rb-rail-resizer:hover::after, .rb-rail-root[data-resizing] .rb-rail-resizer::after { background: var(--accent); }
