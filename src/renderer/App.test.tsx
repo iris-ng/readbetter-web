@@ -9,7 +9,7 @@ import { hashContent } from '../core/hash'
 import { importMarkdown } from '../core/import/markdown'
 import { buildPdfModel } from '../core/import/pdf'
 import * as linkPickMod from './annotations/linkPick'
-import { canvasTitle, canvasDeleted } from '../core/canvas/canvas'
+import { canvasTitle, canvasDeleted, serializeCanvas } from '../core/canvas/canvas'
 import { createBus, type CrossWindowBus, type CrossWindowMessage } from './crossWindow/bus'
 import { createInMemoryChannelHub } from './crossWindow/testChannel'
 
@@ -104,6 +104,8 @@ function makeAdapter(opts: {
     writeCanvas: vi.fn(async (_pid: string, r: string, md: string) => {
       canvases[r] = md
     }),
+    writeCanvasPreview: vi.fn().mockResolvedValue({ ref: 'previews/test.png' }),
+    readCanvasPreview: vi.fn().mockResolvedValue(null),
     obsidianExportExists: vi.fn().mockResolvedValue(false),
     writeObsidianExport: vi.fn().mockResolvedValue(undefined)
   }
@@ -232,6 +234,57 @@ describe('App', () => {
     await user.click(await screen.findByRole('button', { name: 'A' }))
     await user.click(await screen.findByTestId('card-c1'))
     expect(await screen.findByTestId('backlink-flash')).toBeInTheDocument()
+  })
+
+  it('clicking Markdown region excerpt card flashes DOM region in Reader', async () => {
+    const docText = '# Intro\n\nAlpha paragraph.\n\n# Later\n\nThe TARGET passage sits here.'
+    const s = docText.indexOf('TARGET')
+    const e = s + 'TARGET'.length
+    const canvasMd = serializeCanvas({
+      schemaVersion: 1,
+      id: 'a',
+      title: 'A',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      cards: [
+        {
+          id: 'c1',
+          kind: 'excerpt',
+          source: 'documents/note.md',
+          anchor: {
+            start: s,
+            end: e,
+            exact: 'TARGET',
+            prefix: '',
+            suffix: '',
+            page: { quads: [] },
+            regions: [
+              {
+                kind: 'page-rect',
+                pageIndex: 0,
+                rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.25 },
+                units: 'page-normalized',
+                origin: 'top-left'
+              }
+            ]
+          },
+          snapshot: 'TARGET',
+          note: '',
+          x: 0,
+          y: 0
+        }
+      ],
+      connections: []
+    })
+    const adapter = makeAdapter({ content: docText, canvases: { 'canvases/a.md': canvasMd } })
+    const user = userEvent.setup()
+    render(<App adapter={adapter} />)
+    await user.click(await screen.findByRole('button', { name: /note\.md/i }))
+    await user.click(await screen.findByRole('textbox', { name: /search documents and canvases/i }))
+    await user.click(await screen.findByRole('button', { name: 'A' }))
+
+    await user.click(await screen.findByTestId('card-c1'))
+
+    expect(await screen.findByTestId('reader-region-flash')).toBeInTheDocument()
   })
 
   it('clicking a card whose source is a different document opens that document and flashes', async () => {
@@ -914,8 +967,8 @@ describe('App Connect tool', () => {
     const anchorA = createAnchor(importMarkdown(DOC_A, 'note.md').text, 0, 5)
     const anchorB = createAnchor(importMarkdown(DOC_B, 'b.md').text, 0, 4)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     const { articleA, articleB } = await openTwoPaneConnect(user, writeSidecar)
 
@@ -958,8 +1011,8 @@ describe('App Connect tool', () => {
     const anchorA1 = createAnchor(importMarkdown(DOC_A, 'note.md').text, 0, 5)
     const anchorA2 = createAnchor(importMarkdown(DOC_A, 'note.md').text, 6, 10)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA1 })
-      .mockReturnValueOnce({ anchor: anchorA2 })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA1 })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA2 })
 
     const { articleA } = await openTwoPaneConnect(user, writeSidecar)
 
@@ -1604,14 +1657,15 @@ describe('App cross-window follow raises the partner window', () => {
     return serializeSidecar(side)
   }
 
-  function makeXwAdapter(): PlatformAdapter {
+ function makeXwAdapter(canvases?: Record<string, string>): PlatformAdapter {
     const adapter = makeAdapter({
       entries: [
         { ref: A_REF, name: 'a.md', ext: 'md' },
         { ref: X_REF, name: 'x.md', ext: 'md' }
       ],
       openDocument: vi.fn(async (_pid: string, ref: string) => ({ ref, content: docs[ref] ?? '', hash: '' })),
-      sidecar: null
+ sidecar: null,
+ canvases
     })
     ;(adapter.readSidecar as ReturnType<typeof vi.fn>).mockImplementation((_pid: string, ref: string) =>
       Promise.resolve(ref === A_REF ? sidecarForA() : null)
@@ -1738,8 +1792,8 @@ describe('App B2: Connect-mode smart create', () => {
     const anchorA = createAnchor(textA, textA.indexOf('Alpha'), textA.indexOf('Alpha') + 'Alpha'.length)
     const anchorB = createAnchor(textB, textB.indexOf('Beta'), textB.indexOf('Beta') + 'Beta'.length)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     // Enable Connect mode.
     await user.click(screen.getByRole('button', { name: /draw/i }))
@@ -1785,8 +1839,8 @@ describe('App B2: Connect-mode smart create', () => {
     const anchorA = createAnchor(textA, 0, 5)
     const anchorB = createAnchor(textB, 0, 4)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
     fireEvent.click(articleA)
@@ -1825,8 +1879,8 @@ describe('App B2: Connect-mode smart create', () => {
     // Second pick: bare word in B.
     const anchorB = createAnchor(textB, 0, 4)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
     fireEvent.click(articleA)
@@ -1862,8 +1916,8 @@ describe('App B2: Connect-mode smart create', () => {
     const anchorA1 = createAnchor(textA, 0, 5)
     const anchorA2 = createAnchor(textA, 6, 10)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA1 })
-      .mockReturnValueOnce({ anchor: anchorA2 })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA1 })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA2 })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
 
@@ -2088,8 +2142,8 @@ describe('App BM1: navigate a Connect-mode-created connection', () => {
     const anchorA = createAnchor(textA, textA.indexOf('Unique-A-Word'), textA.indexOf('Unique-A-Word') + 'Unique-A-Word'.length)
     const anchorB = createAnchor(textB, textB.indexOf('Unique-B-Word'), textB.indexOf('Unique-B-Word') + 'Unique-B-Word'.length)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
     fireEvent.click(articleA)
@@ -2122,8 +2176,8 @@ describe('App BM1: navigate a Connect-mode-created connection', () => {
     const anchorA = createAnchor(textA, textA.indexOf('Unique-A-Word'), textA.indexOf('Unique-A-Word') + 'Unique-A-Word'.length)
     const anchorB = createAnchor(textB, textB.indexOf('Unique-B-Word'), textB.indexOf('Unique-B-Word') + 'Unique-B-Word'.length)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: anchorA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
     fireEvent.click(articleA)
@@ -2155,8 +2209,8 @@ describe('App BM1: navigate a Connect-mode-created connection', () => {
     const wordA = createAnchor(textA, textA.indexOf('Unique-A-Word'), textA.indexOf('Unique-A-Word') + 'Unique-A-Word'.length)
     const anchorB = createAnchor(textB, textB.indexOf('Unique-B-Word'), textB.indexOf('Unique-B-Word') + 'Unique-B-Word'.length)
     vi.spyOn(linkPickMod, 'linkPickFromPoint')
-      .mockReturnValueOnce({ anchor: wordA })
-      .mockReturnValueOnce({ anchor: anchorB })
+      .mockReturnValueOnce({ kind: 'text', anchor: wordA })
+      .mockReturnValueOnce({ kind: 'text', anchor: anchorB })
 
     await user.click(screen.getByRole('button', { name: /draw/i }))
     fireEvent.click(articleA)
@@ -2474,7 +2528,7 @@ describe('App Task 2: Connect-mode click on PDF pane reaches onConnectPick', () 
     scanned: false
   }
 
-  function makePdfBesideMdAdapter(writeSidecar: ReturnType<typeof vi.fn>): PlatformAdapter {
+function makePdfBesideMdAdapter(writeSidecar: ReturnType<typeof vi.fn>, pdfSidecar: string | null = null): PlatformAdapter {
     const adapter = makeAdapter({
       entries: [
         { ref: MD_REF, name: 'note.md', ext: 'md' },
@@ -2483,7 +2537,10 @@ describe('App Task 2: Connect-mode click on PDF pane reaches onConnectPick', () 
       openDocument: vi.fn(async (_pid: string, ref: string) => ({ ref, content: ref === MD_REF ? THREE : '', hash: '' })),
       writeSidecar
     })
-    ;(adapter.parsePdf as ReturnType<typeof vi.fn>).mockResolvedValue(PDF_PARSE)
+;(adapter.readSidecar as ReturnType<typeof vi.fn>).mockImplementation(async (_pid: string, ref: string) =>
+  ref === PDF_REF ? pdfSidecar : null
+)
+;(adapter.parsePdf as ReturnType<typeof vi.fn>).mockResolvedValue(PDF_PARSE)
     return adapter
   }
 
@@ -2491,10 +2548,19 @@ describe('App Task 2: Connect-mode click on PDF pane reaches onConnectPick', () 
     vi.restoreAllMocks()
   })
 
-  it('Connect-mode click on a PDF pane calls onConnectPick with PDF ref + word pick', async () => {
-    const writeSidecar = vi.fn().mockResolvedValue(undefined)
-    const user = userEvent.setup()
-    render(<App adapter={makePdfBesideMdAdapter(writeSidecar)} />)
+it('Connect-mode click on PDF pane passes resolved PDF highlights into link picking', async () => {
+const writeSidecar = vi.fn().mockResolvedValue(undefined)
+const user = userEvent.setup()
+const pdfDoc = buildPdfModel(PDF_PARSE, 'p.pdf')
+const highlightAnchor = createAnchor(pdfDoc.text, 0, pdfDoc.text.length)
+const sidecar = emptySidecar('pdf-doc', 'pdf-hash')
+sidecar.annotations.push({
+id: 'pdf-h1',
+anchor: highlightAnchor,
+color: '#fde68a',
+note: ''
+})
+render(<App adapter={makePdfBesideMdAdapter(writeSidecar, serializeSidecar(sidecar))} />)
 
     // Open the markdown doc as primary, PDF beside it as secondary.
     await user.click(await screen.findByRole('button', { name: /note\.md/i }))
@@ -2504,10 +2570,11 @@ describe('App Task 2: Connect-mode click on PDF pane reaches onConnectPick', () 
     await screen.findByTestId('pdf-page-0')
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2))
 
-    // Spy: linkPickFromPoint returns a word pick (the PDF connect path always resolves word).
-    const pdfDoc = buildPdfModel(PDF_PARSE, 'p.pdf')
-    const anchor = createAnchor(pdfDoc.text, 0, 4)
-    vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({ anchor })
+const picker = vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({
+kind: 'annotation',
+anchor: highlightAnchor,
+annotationId: 'pdf-h1'
+})
 
     // Enter Connect mode, then click the PDF article (the second article = PDF pane).
     await user.click(screen.getByRole('button', { name: /draw/i }))
@@ -2516,7 +2583,10 @@ describe('App Task 2: Connect-mode click on PDF pane reaches onConnectPick', () 
     fireEvent.click(articles[1])
 
     // linkPickFromPoint must have been called (wiring went through).
-    expect(linkPickMod.linkPickFromPoint).toHaveBeenCalledTimes(1)
+    expect(picker).toHaveBeenCalledTimes(1)
+    expect(picker.mock.calls[0][3]).toEqual([
+      expect.objectContaining({ id: 'pdf-h1', anchor: highlightAnchor, range: { start: 0, end: pdfDoc.text.length } })
+    ])
   })
 })
 
@@ -2708,14 +2778,15 @@ describe('App Task 5: cross-window lone dots + follow-link', () => {
     return serializeSidecar(side)
   }
 
-  function makeXwAdapter(): PlatformAdapter {
+ function makeXwAdapter(canvases?: Record<string, string>): PlatformAdapter {
     const adapter = makeAdapter({
       entries: [
         { ref: A_REF, name: 'note.md', ext: 'md' },
         { ref: B_REF, name: 'b.md', ext: 'md' }
       ],
       openDocument: vi.fn(async (_pid: string, ref: string) => ({ ref, content: docs[ref] ?? '', hash: '' })),
-      sidecar: null
+ sidecar: null,
+ canvases
     })
     ;(adapter.readSidecar as ReturnType<typeof vi.fn>).mockImplementation((_pid: string, ref: string) =>
       Promise.resolve(ref === A_REF ? sidecarForRefA() : serializeSidecar(emptySidecar('doc-b', hashContent(DOC_B))))
@@ -2821,7 +2892,34 @@ describe('App Task 5: cross-window lone dots + follow-link', () => {
     expect(posted.some((m) => m.type === 'open-entity')).toBe(false)
   })
 
-  // (d) RECEIVER: a `navigate{targetRef, linkId}` from another window must land at THIS window's
+ it('(c3) clicking lone dot with pinned canvas and 3 slots opens partner without replacing source', async () => {
+ act(() => {
+ Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1280 })
+ window.dispatchEvent(new Event('resize'))
+ })
+ const canvasMd = '---\nschemaVersion: 1\nid: "board-a"\ntitle: "Board A"\nviewport: { x: 0, y: 0, zoom: 1 }\ncards: []\nconnections: []\n---\n\n'
+ const { busFactory } = makeBusPair()
+ const user = userEvent.setup()
+ render(<App adapter={makeXwAdapter({ 'canvases/a.md': canvasMd })} busFactory={busFactory} />)
+
+ await user.click(await screen.findByRole('button', { name: /note\.md/i }))
+ await screen.findByTestId('section-0-one')
+ await user.click(screen.getByRole('button', { name: 'Open' }))
+ await user.click(await screen.findByRole('button', { name: 'Board A' }))
+ await screen.findByTestId('canvas-board')
+ await user.click(screen.getByRole('button', { name: 'Pin canvas' }))
+
+ fireEvent.click(await screen.findByTestId(`link-dot-${CONN_ID}-from`))
+
+ await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2))
+ const paneEls = Array.from(document.querySelectorAll('[data-pane-kind]'))
+ expect(paneEls.map((el) => el.getAttribute('data-pane-kind'))).toEqual(['doc', 'doc', 'canvas'])
+ expect(screen.getByTestId('section-0-one')).toBeInTheDocument()
+ expect(screen.getByRole('button', { name: 'Unpin canvas' })).toBeInTheDocument()
+ localStorage.removeItem('rb-pinned-canvas')
+ })
+
+ // (d) RECEIVER: a `navigate{targetRef, linkId}` from another window must land at THIS window's
   // OWN endpoint of the link, resolved from THIS pane's sidecar record by the shared id — NOT from
   // any anchor in the message. This is the defect the fix corrects (the old payload carried the
   // clicking window's foreign anchor → resolved to position 0 in the partner doc).
@@ -2986,16 +3084,16 @@ describe('App Task 6: global Draw + cross-window create', () => {
     const textX = importMarkdown(DOC_X, 'x.md').text
     const anchorX = createAnchor(textX, textX.indexOf('Beta'), textX.indexOf('Beta') + 'Beta'.length)
     act(() => {
-      other.post({ type: 'pending-pick', windowId: 'win-other', docRef: X_REF, pick: { anchor: anchorX } })
+      other.post({ type: 'pending-pick', windowId: 'win-other', docRef: X_REF, pick: { kind: 'text', anchor: anchorX } })
     })
 
     // Local annotation pick in doc A (h-a) → completes the cross-window pair.
     const textA = importMarkdown(DOC_A, 'note.md').text
     const anchorA = createAnchor(textA, textA.indexOf('Alpha'), textA.indexOf('Alpha') + 'Alpha'.length)
-    vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({ anchor: anchorA })
+    vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({ kind: 'text', anchor: anchorA })
     fireEvent.click(article)
 
-    // The LOCAL end (doc A's sidecar) is written with a link whose end.annotationId=h-a, otherDocRef=X.
+    // The LOCAL end (doc A's sidecar) is written with the picked annotation anchor and otherDocRef=X.
     await waitFor(() => {
       const aCalls = writeSidecar.mock.calls.filter((c: unknown[]) => c[1] === A_REF)
       expect(aCalls.length).toBeGreaterThan(0)
@@ -3029,13 +3127,13 @@ describe('App Task 6: global Draw + cross-window create', () => {
     const textX = importMarkdown(DOC_X, 'x.md').text
     const anchorX = createAnchor(textX, 0, 4)
     act(() => {
-      other.post({ type: 'pending-pick', windowId: 'win-other', docRef: X_REF, pick: { anchor: anchorX } })
+      other.post({ type: 'pending-pick', windowId: 'win-other', docRef: X_REF, pick: { kind: 'text', anchor: anchorX } })
     })
 
-    // Local annotation pick → mixed → link with annotationId on A side.
+    // Local annotation pick → mixed link using the picked annotation anchor on A side.
     const textA = importMarkdown(DOC_A, 'note.md').text
     const anchorA = createAnchor(textA, textA.indexOf('Alpha'), textA.indexOf('Alpha') + 'Alpha'.length)
-    vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({ anchor: anchorA })
+    vi.spyOn(linkPickMod, 'linkPickFromPoint').mockReturnValueOnce({ kind: 'text', anchor: anchorA })
     fireEvent.click(article)
 
     await waitFor(() => {
@@ -3061,7 +3159,7 @@ describe('App Task 6: global Draw + cross-window create', () => {
     await screen.findByTestId('section-0-one')
 
     // Another window completed a create and asks THIS window (which owns A_REF) to persist its end:
-    // a link with end.annotationId=h-a (in A), otherDocRef=X.
+    // a link with the picked annotation anchor in A and otherDocRef=X.
     const anchor = createAnchor(importMarkdown(DOC_A, 'note.md').text, 0, 5)
     act(() => {
       other.post({

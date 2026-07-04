@@ -22,6 +22,8 @@ export interface PlatformAdapter {
   listCanvases(projectId: string): Promise<CanvasEntry[]>
   readCanvas(projectId: string, ref: string): Promise<string | null>
   writeCanvas(projectId: string, ref: string, md: string): Promise<void>
+  writeCanvasPreview(projectId: string, blob: Blob): Promise<{ ref: string }>
+  readCanvasPreview(projectId: string, ref: string): Promise<Blob | null>
   relocateProject(id: string, path: string): Promise<ProjectInfo>
   pickFolder(): Promise<string | null>
   obsidianExportExists(projectId: string, title: string): Promise<boolean>

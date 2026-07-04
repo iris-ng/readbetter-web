@@ -147,6 +147,152 @@ describe('Reader (annotation-aware)', () => {
     const heading = screen.getByRole('heading', { name: 'One' })
     expect(heading).toHaveAttribute('data-cs', String(doc.sections[0].charStart))
   })
+
+  it('captures a dragged DOM rectangle as a region excerpt', () => {
+    const onCaptureRegion = vi.fn()
+    const { container } = render(
+      <Reader doc={doc} {...baseProps} captureRegionMode onCaptureRegion={onCaptureRegion} />
+    )
+    const article = container.querySelector('article') as HTMLElement
+    Object.defineProperties(article, {
+      scrollLeft: { configurable: true, value: 0 },
+      scrollTop: { configurable: true, value: 0 },
+      scrollWidth: { configurable: true, value: 1000 },
+      scrollHeight: { configurable: true, value: 800 }
+    })
+    article.getBoundingClientRect = () =>
+      ({ left: 100, top: 200, width: 500, height: 400, right: 600, bottom: 600 } as DOMRect)
+    article.setPointerCapture = vi.fn()
+    article.releasePointerCapture = vi.fn()
+    const pointer = (type: string, clientX: number, clientY: number): void => {
+      const event = new MouseEvent(type, { clientX, clientY, bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'pointerId', { value: 1 })
+      fireEvent(article, event)
+    }
+
+    pointer('pointerdown', 150, 240)
+    pointer('pointermove', 350, 360)
+    pointer('pointerup', 350, 360)
+
+    expect(onCaptureRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        regions: [
+          expect.objectContaining({
+            kind: 'page-rect',
+            pageIndex: 0,
+            rect: { x: 0.05, y: 0.05, w: 0.2, h: 0.15 }
+          })
+        ]
+      }),
+      expect.stringContaining('Alpha')
+    )
+  })
+
+  it('uses text intersecting the drawn DOM rectangle for the region snapshot', () => {
+    const onCaptureRegion = vi.fn()
+    const { container } = render(
+      <Reader doc={doc} {...baseProps} activeIndex={0} captureRegionMode onCaptureRegion={onCaptureRegion} />
+    )
+    const article = container.querySelector('article') as HTMLElement
+    Object.defineProperties(article, {
+      scrollLeft: { configurable: true, value: 0 },
+      scrollTop: { configurable: true, value: 0 },
+      scrollWidth: { configurable: true, value: 1000 },
+      scrollHeight: { configurable: true, value: 800 }
+    })
+    article.getBoundingClientRect = () =>
+      ({ left: 100, top: 200, width: 500, height: 400, right: 600, bottom: 600 } as DOMRect)
+    article.setPointerCapture = vi.fn()
+    article.releasePointerCapture = vi.fn()
+    ;(screen.getByText('Delta.') as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 150, top: 430, width: 80, height: 20, right: 230, bottom: 450 } as DOMRect)
+    const pointer = (type: string, clientX: number, clientY: number): void => {
+      const event = new MouseEvent(type, { clientX, clientY, bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'pointerId', { value: 1 })
+      fireEvent(article, event)
+    }
+
+    pointer('pointerdown', 145, 425)
+    pointer('pointermove', 235, 455)
+    pointer('pointerup', 235, 455)
+
+    expect(onCaptureRegion).toHaveBeenCalledWith(expect.objectContaining({ exact: 'Delta.' }), 'Delta.')
+  })
+
+  it('falls back to active section text when a DOM region captures no text leaves', () => {
+    const onCaptureRegion = vi.fn()
+    const { container } = render(
+      <Reader doc={doc} {...baseProps} activeIndex={0} captureRegionMode onCaptureRegion={onCaptureRegion} />
+    )
+    const article = container.querySelector('article') as HTMLElement
+    Object.defineProperties(article, {
+      scrollLeft: { configurable: true, value: 0 },
+      scrollTop: { configurable: true, value: 0 },
+      scrollWidth: { configurable: true, value: 1000 },
+      scrollHeight: { configurable: true, value: 800 }
+    })
+    article.getBoundingClientRect = () =>
+      ({ left: 100, top: 200, width: 500, height: 400, right: 600, bottom: 600 } as DOMRect)
+    article.setPointerCapture = vi.fn()
+    article.releasePointerCapture = vi.fn()
+    for (const leaf of Array.from(container.querySelectorAll<HTMLElement>('[data-cs]'))) {
+      leaf.getBoundingClientRect = () =>
+        ({ left: 700, top: 700, width: 10, height: 10, right: 710, bottom: 710 } as DOMRect)
+    }
+    const pointer = (type: string, clientX: number, clientY: number): void => {
+      const event = new MouseEvent(type, { clientX, clientY, bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'pointerId', { value: 1 })
+      fireEvent(article, event)
+    }
+
+    pointer('pointerdown', 145, 425)
+    pointer('pointermove', 235, 455)
+    pointer('pointerup', 235, 455)
+
+    expect(onCaptureRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ exact: expect.stringContaining('Alpha beta gamma.') }),
+      expect.stringContaining('Alpha beta gamma.')
+    )
+  })
+
+  it('renders and scrolls a DOM region flash for Canvas back-navigation', () => {
+    const { rerender } = render(
+      <Reader
+        doc={doc}
+        {...baseProps}
+        flashPageRect={{ pageIndex: 0, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.25 }, nonce: 1 }}
+      />
+    )
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+    rerender(
+      <Reader
+        doc={doc}
+        {...baseProps}
+        flashPageRect={{ pageIndex: 0, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.25 }, nonce: 2 }}
+      />
+    )
+    expect(screen.getByTestId('reader-region-flash')).toBeInTheDocument()
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+  })
+
+  it('keeps normal text selection highlight creation when DOM capture is off', () => {
+    const onCreateRange = vi.fn()
+    const { container } = render(<Reader doc={doc} {...baseProps} onCreateRange={onCreateRange} />)
+    const textNode = screen.getByText('Alpha beta gamma.').firstChild as Text
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 5)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+
+    fireEvent.mouseUp(container.querySelector('article') as HTMLElement)
+
+    expect(onCreateRange).toHaveBeenCalledWith({
+      start: doc.text.indexOf('Alpha'),
+      end: doc.text.indexOf('Alpha') + 5
+    })
+  })
 })
 
 const three = importMarkdown('# One\nAlpha.\n\n## Two\nBeta.\n\n## Three\nGamma.', 'd.md')

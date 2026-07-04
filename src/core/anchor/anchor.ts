@@ -1,3 +1,5 @@
+import { isDocumentRegion, type DocumentRegion } from './region'
+
 /** Characters of surrounding context captured on each side of an anchor's quote. */
 export const CONTEXT_LEN = 48
 
@@ -20,11 +22,29 @@ export interface Anchor {
   suffix: string
   /** Secondary page+coords selector (PDF only); fallback when the text layers fail to resolve. */
   page?: { quads: Quad[] }
+  /** Optional durable region model for text ranges and page rectangles. */
+  regions?: DocumentRegion[]
 }
 
 export interface ResolvedRange {
   start: number
   end: number
+}
+
+export function isValidAnchorShape(value: unknown): value is Anchor {
+  if (typeof value !== 'object' || value === null) return false
+  const a = value as Record<string, unknown>
+  const legacyShape =
+    typeof a.start === 'number' &&
+    typeof a.end === 'number' &&
+    typeof a.exact === 'string' &&
+    typeof a.prefix === 'string' &&
+    typeof a.suffix === 'string'
+  if (!legacyShape) return false
+  if (a.regions !== undefined) {
+    return Array.isArray(a.regions) && a.regions.every(isDocumentRegion)
+  }
+  return true
 }
 
 export function createAnchor(text: string, start: number, end: number): Anchor {

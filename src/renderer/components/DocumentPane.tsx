@@ -3,11 +3,13 @@ import type { JSX } from 'react'
 import type { PlatformAdapter } from '../platform'
 import type { Loaded } from '../App'
 import type { ExcerptDropPayload } from '../canvas/excerptDrag'
+import type { Anchor } from '../../core/anchor/anchor'
+import type { PageRectRegion } from '../../core/anchor/region'
 import type { Link } from '../../core/link/link'
 import type { LinkPick } from '../annotations/linkPick'
 import { linkPickFromPoint } from '../annotations/linkPick'
 import { buildPdfRunIndex } from '../../core/pdf/pdfLayout'
-import { PdfPageView } from './PdfPageView'
+import { PdfPageView, type PdfRegionAnchor } from './PdfPageView'
 import { ZoomControl } from './ZoomControl'
 import { useZoom } from '../hooks/useZoom'
 import { useDocSearch } from '../hooks/useDocSearch'
@@ -15,10 +17,12 @@ import { Reader } from './Reader'
 import { SearchBar } from './SearchBar'
 import { OrphanTray } from './OrphanTray'
 import { SavedViewsBar } from './SavedViewsBar'
+import { GapBand } from './GapBand'
+import { PinnedPassage } from './PinnedPassage'
 import { useSectionNavigation } from './useSectionNavigation'
 import { useAnnotations, ResolvedAnnotation } from '../annotations/useAnnotations'
 import { usePins } from '../compare/usePins'
-import { defaultViewName } from '../../core/compare/squeeze'
+import { defaultViewName, planCompare } from '../../core/compare/squeeze'
 
 /** DPI for the server-side raster fallback when pdf.js blanks a page (spec default). */
 const PDF_FALLBACK_DPI = 150
@@ -28,8 +32,10 @@ interface DocumentPaneProps {
   loaded: Loaded
   platform: PlatformAdapter
   /** The active project's registry id; bound into this pane's sidecar I/O. */
-  projectId: string
+ projectId: string
   flashRange: { start: number; end: number } | null
+  flashPageRect?: { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null
+  regionAnchors?: PdfRegionAnchor[]
   onSendExcerpt: (payload: ExcerptDropPayload) => void
   onAnnotationsResolved?: (sourcePath: string, annotations: ResolvedAnnotation[]) => void
   /** Report this pane's resolved links up so App can pair them across panes and draw lines. */
@@ -91,6 +97,8 @@ export function DocumentPane({
   platform,
   projectId,
   flashRange,
+  flashPageRect,
+  regionAnchors = [],
   onSendExcerpt,
   onAnnotationsResolved,
   onLinksResolved,
@@ -108,6 +116,8 @@ export function DocumentPane({
   const zoom = useZoom()
   const search = useDocSearch(doc.text)
   const totalPages = loaded.pdf?.parse.pages.length ?? 0
+ const [expandedCompareGaps, setExpandedCompareGaps] = useState<Set<number>>(new Set())
+ const [captureRegionMode, setCaptureRegionMode] = useState(false)
 
   useEffect(() => {
     if (!loaded.pdf) return
@@ -232,15 +242,79 @@ export function DocumentPane({
   const togglePinAnnotation = (a: ResolvedAnnotation): void => {
     pins.toggleByAnnotation({ id: a.id, anchor: a.anchor, range: a.range })
   }
+  const handleCaptureRegion = (anchor: Anchor, snapshot: string, previewBlob?: Blob): void => {
+    void (async () => {
+      let previewAssetRef: string | undefined
+      if (previewBlob) {
+        try {
+          previewAssetRef = (await platform.writeCanvasPreview(projectId, previewBlob)).ref
+        } catch {
+          previewAssetRef = undefined
+        }
+      }
+      onSendExcerpt({ source: loaded.sourcePath, anchor, snapshot, previewAssetRef })
+    })()
+    setCaptureRegionMode(false)
+  }
+
+  const toggleCompareGap = (key: number): void => {
+    setExpandedCompareGaps((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const pdfCompareBody = pins.compareActive
+    ? planCompare(doc.text, doc.sections, pins.pinnedRanges).map((seg) =>
+        seg.kind === 'pin' ? (
+          <PinnedPassage
+            key={`pin-${seg.passage.id ?? seg.passage.range.start}`}
+            passage={seg.passage}
+            onRelease={() => {
+              if (seg.passage.id) pins.release(seg.passage.id)
+            }}
+          />
+        ) : (
+          <GapBand
+            key={`gap-${seg.ranges[0].start}`}
+            ranges={seg.ranges}
+            documentText={doc.text}
+            expanded={expandedCompareGaps.has(seg.ranges[0].start)}
+            onToggle={() => toggleCompareGap(seg.ranges[0].start)}
+          />
+        )
+      )
+    : null
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
-      {loaded.pdf && (
+      {(loaded.pdf || !pins.compareActive) && (
         <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', flex: '0 0 auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <ZoomControl
-            zoom={zoom.zoom}
-            onZoomChange={zoom.setZoom}
-          />
+          {loaded.pdf && (
+            <ZoomControl
+              zoom={zoom.zoom}
+              onZoomChange={zoom.setZoom}
+            />
+          )}
+          <button
+            type="button"
+            aria-pressed={captureRegionMode}
+            disabled={!!connectMode || pins.compareActive}
+            onClick={() => setCaptureRegionMode((v) => !v)}
+            style={{
+              padding: '4px 8px',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              background: captureRegionMode ? 'var(--accent)' : 'transparent',
+              color: captureRegionMode ? 'var(--accent-contrast)' : 'var(--fg)',
+              cursor: connectMode || pins.compareActive ? 'not-allowed' : 'pointer',
+              font: '600 12px var(--font-sans)'
+            }}
+          >
+            Capture region
+          </button>
         </div>
       )}
       {searchOpen && (
@@ -256,32 +330,49 @@ export function DocumentPane({
       )}
       <div style={{ display: 'flex', flex: 1, minWidth: 0, minHeight: 0 }}>
         {loaded.pdf ? (
-          <PdfPageView
-            parse={loaded.pdf.parse}
-            runIndex={pdfRunIndex ?? []}
-            activeIndex={activeIndex}
-            zoom={zoom.zoom}
-            renderPage={loaded.pdf.renderPage}
-            renderPageImage={(page) => platform.renderPdfPageImage(projectId, loaded.sourcePath, page, PDF_FALLBACK_DPI)}
-            annotations={ann.annotations}
-            onCreateRange={handleRange}
-            onSetNote={ann.setNote}
-            onSetColor={ann.setColor}
-            onDelete={ann.remove}
-            sourceRef={loaded.sourcePath}
-            docText={doc.text}
-            onSendExcerpt={onSendExcerpt}
-            connectMode={connectMode}
-            onConnectClick={(e) => {
-              const p = linkPickFromPoint(e.clientX, e.clientY, doc.text)
-              if (p) onConnectPick?.(loaded.sourcePath, p)
-            }}
-            flashRange={jumpFlash ?? flashRange}
-            searchMatches={search.matches}
-            activeMatch={search.activeMatch}
-            onZoomIn={zoom.zoomIn}
-            onZoomOut={zoom.zoomOut}
-          />
+          pins.compareActive ? (
+            <div
+              data-pane-content
+              style={{ flex: 1, overflowY: 'auto', padding: '16px 24px', fontSize: 'var(--text-base)', lineHeight: 'var(--leading-relaxed)' }}
+            >
+              {pdfCompareBody}
+            </div>
+          ) : (
+            <PdfPageView
+              parse={loaded.pdf.parse}
+              runIndex={pdfRunIndex ?? []}
+              activeIndex={activeIndex}
+              zoom={zoom.zoom}
+              renderPage={loaded.pdf.renderPage}
+              renderPageImage={(page) => platform.renderPdfPageImage(projectId, loaded.sourcePath, page, PDF_FALLBACK_DPI)}
+              annotations={ann.annotations}
+              onCreateRange={handleRange}
+              onSetNote={ann.setNote}
+              onSetColor={ann.setColor}
+              onDelete={ann.remove}
+              isPinnedAnnotation={pins.isPinnedAnnotation}
+              atCap={pins.atCap}
+              onTogglePinAnnotation={togglePinAnnotation}
+              sourceRef={loaded.sourcePath}
+              docText={doc.text}
+              onSendExcerpt={onSendExcerpt}
+                connectMode={connectMode}
+onConnectClick={(e) => {
+const p = linkPickFromPoint(e.clientX, e.clientY, doc.text, ann.annotations)
+if (p) onConnectPick?.(loaded.sourcePath, p)
+}}
+onConnectRegion={(anchor, region) => onConnectPick?.(loaded.sourcePath, { kind: 'region', anchor, region })}
+regionAnchors={regionAnchors}
+flashRange={jumpFlash ?? flashRange}
+                captureRegionMode={captureRegionMode}
+                onCaptureRegion={handleCaptureRegion}
+                flashPageRect={flashPageRect}
+                searchMatches={search.matches}
+              activeMatch={search.activeMatch}
+              onZoomIn={zoom.zoomIn}
+              onZoomOut={zoom.zoomOut}
+            />
+          )
         ) : (
           <Reader
             doc={doc}
@@ -305,12 +396,15 @@ export function DocumentPane({
             activeMatch={search.activeMatch}
             onSendExcerpt={onSendExcerpt}
             connectMode={connectMode}
-            onConnectClick={(e) => {
-              const p = linkPickFromPoint(e.clientX, e.clientY, doc.text)
-              if (p) onConnectPick?.(loaded.sourcePath, p)
-            }}
-          />
-        )}
+              onConnectClick={(e) => {
+                const p = linkPickFromPoint(e.clientX, e.clientY, doc.text, ann.annotations)
+                if (p) onConnectPick?.(loaded.sourcePath, p)
+              }}
+              captureRegionMode={captureRegionMode}
+              onCaptureRegion={handleCaptureRegion}
+              flashPageRect={flashPageRect}
+            />
+          )}
       </div>
       <SavedViewsBar
         views={ann.savedViews}

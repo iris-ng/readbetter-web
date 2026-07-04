@@ -11,28 +11,28 @@ describe('HttpAdapter', () => {
   it('listProjects GETs /api/projects', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
-        JSON.stringify([{ id: 'proj-abc', name: 'My Library', path: '/srv/readbetter-library', docCount: 3 }]),
+        JSON.stringify([{ id: 'proj-abc', name: 'My Library', path: '/home/lib', docCount: 3 }]),
         { status: 200 }
       )
     )
     const result = await new HttpAdapter().listProjects()
-    expect(result).toEqual([{ id: 'proj-abc', name: 'My Library', path: '/srv/readbetter-library', docCount: 3 }])
+    expect(result).toEqual([{ id: 'proj-abc', name: 'My Library', path: '/home/lib', docCount: 3 }])
     expect(fetchMock).toHaveBeenCalledWith('/api/projects')
   })
 
   it('registerProject POSTs path to /api/projects', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
-        JSON.stringify({ id: 'proj-abc', name: 'My Library', path: '/srv/readbetter-library', docCount: 0 }),
+        JSON.stringify({ id: 'proj-abc', name: 'My Library', path: '/home/lib', docCount: 0 }),
         { status: 200 }
       )
     )
-    const result = await new HttpAdapter().registerProject('/srv/readbetter-library')
+    const result = await new HttpAdapter().registerProject('/home/lib')
     expect(result).toMatchObject({ id: 'proj-abc', name: 'My Library' })
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toBe('/api/projects')
     expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json' } })
-    expect(JSON.parse(init!.body as string)).toEqual({ path: '/srv/readbetter-library' })
+    expect(JSON.parse(init!.body as string)).toEqual({ path: '/home/lib' })
   })
 
   it('unregisterProject DELETEs /api/projects/:id', async () => {

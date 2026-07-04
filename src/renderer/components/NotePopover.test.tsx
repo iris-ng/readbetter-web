@@ -133,6 +133,35 @@ describe('NotePopover', () => {
   })
 })
 
+describe('NotePopover positioning', () => {
+  it('keeps the popover inside the viewport when opened near the edge', () => {
+    vi.stubGlobal('innerWidth', 320)
+    vi.stubGlobal('innerHeight', 240)
+
+    render(
+      <NotePopover
+        annotation={annotation}
+        x={999}
+        y={999}
+        onSetNote={vi.fn()}
+        onSetColor={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+        isPinned={false}
+        atCap={false}
+        onTogglePin={vi.fn()}
+      />
+    )
+
+    expect(screen.getByRole('dialog', { name: 'Annotation' })).toHaveStyle({
+      left: '92px',
+      top: '52px'
+    })
+
+    vi.unstubAllGlobals()
+  })
+})
+
 describe('NotePopover link button (C3: retired)', () => {
   // The "Link to…" button and onLink prop were removed in C3 — Connect mode is the only
   // cross-link create path. Verify the button is gone entirely.

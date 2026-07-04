@@ -4,12 +4,14 @@ import { ExcerptCard as ExcerptCardModel } from '../../core/canvas/canvas'
 export function ExcerptCard({
   card,
   liveColor,
+  previewUrl,
   onClick,
   onSetNote,
   onPointerDownDrag
 }: {
   card: ExcerptCardModel
   liveColor?: string
+  previewUrl?: string
   onClick: () => void
   onSetNote: (note: string) => void
   onPointerDownDrag: (e: React.PointerEvent) => void
@@ -26,6 +28,7 @@ export function ExcerptCard({
   // When the user has resized the card (h set) it renders at that fixed height with the snapshot
   // scrolling inside; otherwise it is content-sized. Width follows card.w (default 240).
   const sized = card.h !== undefined
+  const imageUrl = previewUrl ?? card.previewDataUrl
   return (
     <div
       data-testid={`card-${card.id}`}
@@ -35,9 +38,24 @@ export function ExcerptCard({
       style={{ width: card.w ?? 240, height: card.h, display: 'flex', flexDirection: 'column', boxShadow: 'var(--shadow-md)', overflow: 'hidden', cursor: 'pointer' }}
     >
       <div title="Open source" style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)', background: headerBg, padding: '6px 8px', fontSize: 'var(--text-xs)', fontWeight: 'var(--weight-semibold)', fontFamily: 'var(--font-sans)', color: 'var(--fg)' }}>
-        {title}
-      </div>
-      <blockquote style={{ flex: sized ? '1 1 auto' : '0 0 auto', minHeight: 0, overflow: sized ? 'auto' : 'visible', margin: 0, padding: '8px', borderLeft: `3px solid ${edge}`, fontSize: 'var(--text-base)', lineHeight: 'var(--leading-normal)', fontFamily: 'var(--font-sans)', color: 'var(--fg)', whiteSpace: 'pre-wrap' }}>
+ {title}
+ </div>
+      {imageUrl && (
+        <img
+          src={imageUrl}
+ alt=""
+ style={{
+ flex: '0 0 auto',
+ display: 'block',
+ width: '100%',
+ maxHeight: sized ? 120 : 180,
+ objectFit: 'contain',
+ background: '#fff',
+ borderBottom: '1px solid var(--border)'
+ }}
+ />
+ )}
+ <blockquote style={{ flex: sized ? '1 1 auto' : '0 0 auto', minHeight: 0, overflow: sized ? 'auto' : 'visible', margin: 0, padding: '8px', borderLeft: `3px solid ${edge}`, fontSize: 'var(--text-base)', lineHeight: 'var(--leading-normal)', fontFamily: 'var(--font-sans)', color: 'var(--fg)', whiteSpace: 'pre-wrap' }}>
         {card.snapshot}
       </blockquote>
       <textarea

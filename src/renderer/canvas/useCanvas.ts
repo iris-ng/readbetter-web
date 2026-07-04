@@ -23,7 +23,7 @@ export interface UseCanvas {
   openCanvas(ref: string): Promise<void>
   createCanvas(title: string, existingRefs: string[]): Promise<string>
   closeCanvas(): void
-  addExcerptCard(input: { source: string; anchor: Anchor; snapshot: string; x: number; y: number; color?: string; sourceAnnotationId?: string }): void
+addExcerptCard(input: { source: string; anchor: Anchor; snapshot: string; x: number; y: number; color?: string; previewAssetRef?: string; previewDataUrl?: string; sourceAnnotationId?: string }): void
   addNoteCard(input: { x: number; y: number }): void
   moveCard(id: string, x: number, y: number): void
   setCardNote(id: string, note: string): void
@@ -110,7 +110,7 @@ export function useCanvas(api: CanvasApi | undefined): UseCanvas {
   }, [])
 
   const addExcerptCard = useCallback(
-    (input: { source: string; anchor: Anchor; snapshot: string; x: number; y: number; color?: string; sourceAnnotationId?: string }) =>
+ (input: { source: string; anchor: Anchor; snapshot: string; x: number; y: number; color?: string; previewAssetRef?: string; previewDataUrl?: string; sourceAnnotationId?: string }) =>
       mutate((m) => ({
         ...m,
         cards: [...m.cards, { kind: 'excerpt', id: cardId(), note: '', ...input }]

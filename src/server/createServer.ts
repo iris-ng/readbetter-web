@@ -4,6 +4,7 @@ import { extname, join, normalize, relative, isAbsolute } from 'path'
 import { listLibrary, readDocument, readDocumentBytes } from '../core/library/library'
 import { exportDirExistsCentral, writeExportFilesCentral } from '../core/library/export-store'
 import { listCanvasesCentral, readCanvasCentral, writeCanvasCentral } from '../core/library/canvas-store'
+import { readCanvasPreviewCentral, writeCanvasPreviewCentral } from '../core/library/canvas-asset-store'
 import { readSidecarByContent, writeSidecarByContent } from '../core/library/sidecar-store'
 import { parseSidecar } from '../core/sidecar/sidecar'
 import { parseCanvas } from '../core/canvas/canvas'
@@ -75,6 +76,12 @@ async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
   for await (const c of req) chunks.push(c as Buffer)
   return Buffer.concat(chunks).toString('utf-8')
+}
+
+async function readBodyBuffer(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const c of req) chunks.push(c as Buffer)
+  return Buffer.concat(chunks)
 }
 
 async function serveStatic(webDir: string, urlPath: string, res: ServerResponse): Promise<void> {
@@ -270,6 +277,26 @@ async function handleApi(
       await writeCanvasCentral(opts.home, projectId, ref, body)
       res.writeHead(204)
       res.end()
+      return
+    }
+    if (path === '/api/canvas-preview' && req.method === 'POST') {
+      const ctype = (req.headers['content-type'] ?? '').toLowerCase()
+      if (!ctype.includes('image/png')) {
+        send(res, 415, 'unsupported media type: expected image/png')
+        return
+      }
+      const written = await writeCanvasPreviewCentral(opts.home, projectId, await readBodyBuffer(req))
+      send(res, 201, JSON.stringify(written), MIME['.json'])
+      return
+    }
+    if (path === '/api/canvas-preview' && req.method === 'GET') {
+      const raw = await readCanvasPreviewCentral(opts.home, projectId, ref)
+      if (raw === null) {
+        send(res, 404, 'no preview')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': raw.byteLength })
+      res.end(raw)
       return
     }
     if (path === '/api/obsidian-export' && req.method === 'GET') {

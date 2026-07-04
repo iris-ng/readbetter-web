@@ -8,9 +8,11 @@ import {
   renameSavedView,
   removeSavedView,
   isValidPinAnchor,
+  Sidecar,
   SavedView,
   PinAnchor
 } from './sidecar'
+import type { DocumentRegion } from '../anchor/region'
 
 const pinAnchor = (sectionId: string): PinAnchor => ({
   sectionId,
@@ -45,7 +47,7 @@ describe('sidecar serialization', () => {
   })
 
   it('round-trips an annotation anchor.page (PDF secondary selector)', () => {
-    const sc = {
+    const sc: Sidecar = {
       ...emptySidecar('doc-1', 'hash-1'),
       annotations: [
         {
@@ -59,6 +61,46 @@ describe('sidecar serialization', () => {
     const round = parseSidecar(serializeSidecar(sc))
     expect(round.annotations).toHaveLength(1)
     expect(round.annotations[0].anchor.page).toEqual({ quads: [{ pageIndex: 0, x: 10, y: 20, w: 30, h: 8 }] })
+  })
+
+  it('round-trips mixed text and page-rect anchor regions without breaking old anchors', () => {
+    const sc = {
+      ...emptySidecar('doc-1', 'hash-1'),
+      annotations: [
+        {
+          id: 'old-a',
+          anchor: { start: 7, end: 12, exact: 'Hello', prefix: '', suffix: '' },
+          color: '#fde68a',
+          note: ''
+        },
+        {
+          id: 'region-a',
+          anchor: {
+            start: 7,
+            end: 12,
+            exact: 'Hello',
+            prefix: '',
+            suffix: '',
+            regions: [
+              { kind: 'text-range', range: { start: 7, end: 12 } },
+              {
+                kind: 'page-rect',
+                pageIndex: 0,
+                rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
+                units: 'page-normalized',
+                origin: 'top-left'
+              }
+            ] as DocumentRegion[]
+          },
+          color: '#bbf7d0',
+          note: ''
+        }
+      ]
+    }
+
+    const round = parseSidecar(serializeSidecar(sc))
+    expect(round.annotations[0].anchor.regions).toBeUndefined()
+    expect(round.annotations[1].anchor.regions).toEqual(sc.annotations[1].anchor.regions)
   })
 
   it('fills missing reserved fields with defaults', () => {

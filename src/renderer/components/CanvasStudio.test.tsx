@@ -47,6 +47,14 @@ describe('CanvasStudio', () => {
     expect(onCardClick).toHaveBeenCalledWith('c1')
   })
 
+  it('deletes the selected card with Delete key', () => {
+    const onRemoveCard = vi.fn()
+    render(<CanvasStudio canvas={model} {...handlers} onRemoveCard={onRemoveCard} />)
+    fireEvent.pointerDown(screen.getByTestId('card-c1'))
+    fireEvent.keyDown(window, { key: 'Delete' })
+    expect(onRemoveCard).toHaveBeenCalledWith('c1')
+  })
+
   it('renders a plain connection path (no arrowhead) for each connection', () => {
     const withConn = { ...model, connections: [{ from: 'c1', to: 'c2', label: 'supports' }] }
     render(<CanvasStudio canvas={withConn} {...handlers} />)

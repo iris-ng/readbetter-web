@@ -99,6 +99,52 @@ describe('canvas codec', () => {
     expect(parseCanvas(serializeCanvas(pdf))).toEqual(pdf)
   })
 
+  it('round-trips excerpt anchor regions while old excerpt anchors remain unchanged', () => {
+    const model: CanvasModel = {
+      ...emptyCanvas('regions', 'Regions'),
+      cards: [
+        {
+          kind: 'excerpt',
+          id: 'old',
+          source: 'documents/a.md',
+          anchor: { start: 0, end: 5, exact: 'hello', prefix: '', suffix: '' },
+          snapshot: 'hello',
+          note: '',
+          x: 0,
+          y: 0
+        },
+        {
+          kind: 'excerpt',
+          id: 'region',
+          source: 'documents/p.pdf',
+          anchor: {
+            start: 0,
+            end: 5,
+            exact: 'hello',
+            prefix: '',
+            suffix: '',
+            regions: [
+              { kind: 'text-range', range: { start: 0, end: 5 } },
+              {
+                kind: 'page-rect',
+                pageIndex: 1,
+                rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
+                units: 'page-normalized',
+                origin: 'top-left'
+              }
+            ]
+          },
+          snapshot: 'hello',
+          note: '',
+          x: 120,
+          y: 80
+        }
+      ]
+    }
+
+    expect(parseCanvas(serializeCanvas(model))).toEqual(model)
+  })
+
   it('serializes a clean readable body (blockquote + note, hidden markers)', () => {
     const out = serializeCanvas(sample)
     expect(out).toContain('<!-- rb:card c1 -->')
@@ -193,6 +239,27 @@ describe('ExcerptCard.sourceAnnotationId round-trip', () => {
     expect(c.kind).toBe('excerpt')
     if (c.kind === 'excerpt') expect(c.sourceAnnotationId).toBe('ann-7')
   })
+})
+
+describe('ExcerptCard previewDataUrl round-trip', () => {
+ it('omits field when absent and round-trips when present', () => {
+ const base = emptyCanvas('c', 'C')
+ const withCard = {
+ ...base,
+ cards: [
+ { kind: 'excerpt', id: 'k1', source: 'd.md', anchor: { start: 0, end: 3, exact: 'abc', prefix: '', suffix: '' }, snapshot: 'abc', note: '', x: 0, y: 0 }
+ ] as typeof base.cards
+ }
+ expect(serializeCanvas(withCard)).not.toContain('previewDataUrl')
+
+ const withPreview = {
+ ...withCard,
+ cards: [{ ...withCard.cards[0], previewDataUrl: 'data:image/png;base64,AAAA' }] as typeof base.cards
+ }
+ const c = parseCanvas(serializeCanvas(withPreview)).cards[0]
+ expect(c.kind).toBe('excerpt')
+ if (c.kind === 'excerpt') expect(c.previewDataUrl).toBe('data:image/png;base64,AAAA')
+ })
 })
 
 describe('uniqueCanvasRef (central)', () => {

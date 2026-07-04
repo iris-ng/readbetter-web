@@ -4,7 +4,7 @@ import {
   projectDir, manifestPath, sidecarPath, canvasesDir, indexPath, cachePath, exportsDir, assertHash
 } from './paths'
 
-const HOME = '/tmp/rb-home'
+const HOME = '/home/u'
 const PID = 'proj-1'
 const HASH = 'a'.repeat(64)
 

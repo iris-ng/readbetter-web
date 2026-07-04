@@ -12,13 +12,13 @@ import { useCanvas } from './canvas/useCanvas'
 import { excerptCardFromDrop, type ExcerptDropPayload } from './canvas/excerptDrag'
 import { placeNewCard } from './canvas/placement'
 import { exportCanvasToObsidian } from './canvas/obsidianExport'
-import { parseCanvas, serializeCanvas } from '../core/canvas/canvas'
+import { parseCanvas, serializeCanvas, type ExcerptCard as CanvasExcerptCard } from '../core/canvas/canvas'
 import type { CanvasEntry } from './platform'
 import { DocumentModel } from '../core/model/document'
 import { importDocument } from '../core/import'
 import { buildPdfModel } from '../core/import/pdf'
 import type { PdfParseResult } from '../core/pdf/liteparse'
-import type { RenderPage } from './components/PdfPageView'
+import type { RenderPage, PdfRegionAnchor } from './components/PdfPageView'
 import { DocumentPane } from './components/DocumentPane'
 import type { ResolvedAnnotation } from './annotations/useAnnotations'
 import { useRecents } from './hooks/useRecents'
@@ -31,6 +31,7 @@ import { useRailState } from './hooks/useRailState'
 import { QuickPicker } from './components/QuickPicker'
 import { LockHolder } from './components/LockHolder'
 import { resolveAnchor, type Anchor } from '../core/anchor/anchor'
+import type { PageRectRegion } from '../core/anchor/region'
 import { summarizeStructure } from '../core/model/structure'
 import { makeLinkPair, type Link } from '../core/link/link'
 import { LinkLayer, type RenderedLink } from './components/LinkLayer'
@@ -86,6 +87,53 @@ export function App({
     [platform, projectId]
   )
   const canvasState = useCanvas(canvasApi)
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
+  const previewRefsSig =
+    canvasState.canvas?.cards
+      .filter((card): card is CanvasExcerptCard => card.kind === 'excerpt' && !!card.previewAssetRef)
+      .map((card) => card.previewAssetRef)
+      .sort()
+      .join('|') ?? ''
+  useEffect(() => {
+    const refs = Array.from(
+      new Set(
+        canvasState.canvas?.cards
+          .filter((card): card is CanvasExcerptCard => card.kind === 'excerpt' && !!card.previewAssetRef)
+          .map((card) => card.previewAssetRef as string) ?? []
+      )
+    )
+    let cancelled = false
+    const objectUrls: string[] = []
+    if (!projectId || refs.length === 0) {
+      setPreviewUrls({})
+      return
+    }
+    void Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const blob = await platform.readCanvasPreview(projectId, ref)
+          if (!blob || cancelled) return null
+          const url = URL.createObjectURL(blob)
+          objectUrls.push(url)
+          return { ref, url }
+        } catch {
+          // Missing or unreadable preview assets should not hide the text fallback.
+          return null
+        }
+      })
+    ).then((entries) => {
+      if (cancelled) return
+      const next: Record<string, string> = {}
+      for (const entry of entries) {
+        if (entry) next[entry.ref] = entry.url
+      }
+      setPreviewUrls(next)
+    })
+    return () => {
+      cancelled = true
+      for (const url of objectUrls) URL.revokeObjectURL(url)
+    }
+  }, [platform, projectId, previewRefsSig])
   const tabs = useTabs()
   const panes = usePanes(tabs, projectId)
   // usePanes returns a FRESH `panes` array every render, so using it directly in useCallback/useEffect
@@ -227,6 +275,13 @@ export function App({
       return
     }
     if (pendingPick.docRef === docRef) {
+      if (pendingPick.pick.kind === 'region' || pick.kind === 'region') {
+        const pair = makeLinkPair(pendingPick.docRef, pendingPick.pick.anchor, docRef, pick.anchor)
+        paneRegistry.current.get(docRef)?.addLink(pair.a)
+        paneRegistry.current.get(docRef)?.addLink(pair.b)
+        setPendingPick(null)
+        return
+      }
       // Same pane: re-pick start (and re-broadcast the new source).
       setPendingPick({ docRef, pick })
       crossWindow.post({ type: 'pending-pick', windowId: WINDOW_ID, docRef, pick })
@@ -302,10 +357,34 @@ export function App({
   // Per-tabId imperative "scroll to + flash this range" requests (C3). Each DocPaneBody reads its
   // own entry connJumpByTab[tabId]. The nonce (a monotonic ref counter, synchronous → React-18
   // safe) refires a pane's jump effect even when the SAME range is jumped twice in a row.
-  const [connJumpByTab, setConnJumpByTab] = useState<Record<string, { start: number; end: number; nonce: number } | null>>({})
-  const jumpNonce = useRef(0)
-  const setConnJump = (tabId: string, v: { start: number; end: number; nonce: number } | null): void =>
-    setConnJumpByTab((prev) => ({ ...prev, [tabId]: v }))
+const [connJumpByTab, setConnJumpByTab] = useState<Record<string, { start: number; end: number; nonce: number } | null>>({})
+ const [regionJumpByTab, setRegionJumpByTab] = useState<
+  Record<string, { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null>
+ >({})
+ const jumpNonce = useRef(0)
+ const setConnJump = (tabId: string, v: { start: number; end: number; nonce: number } | null): void =>
+ setConnJumpByTab((prev) => ({ ...prev, [tabId]: v }))
+ const setRegionJump = (
+  tabId: string,
+  v: { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null
+ ): void => setRegionJumpByTab((prev) => ({ ...prev, [tabId]: v }))
+
+const firstPageRectRegion = (anchor: Anchor): PageRectRegion | null => {
+ return (anchor.regions?.find((r) => r.kind === 'page-rect') as PageRectRegion | undefined) ?? null
+}
+const samePageRect = (
+ a: { pageIndex: number; rect: PageRectRegion['rect'] } | null | undefined,
+ b: PageRectRegion
+): boolean => {
+ return (
+  !!a &&
+  a.pageIndex === b.pageIndex &&
+  a.rect.x === b.rect.x &&
+  a.rect.y === b.rect.y &&
+  a.rect.w === b.rect.w &&
+  a.rect.h === b.rect.h
+ )
+}
   // Per-tabId find-in-page open state (Task 8). Each DocPaneBody reads its own entry; the header
   // magnifier toggles it, Cmd/Ctrl+F opens (never toggles) it on the FOCUSED doc pane. Pure updaters
   // (React-18 safe) — two panes hold independent state, keyed by tabId like connJumpByTab above.
@@ -361,12 +440,16 @@ export function App({
       // which every window sets on boot in useCrossWindow). Empty URL → focus-only, no reload.
       try { window.open('', holderWindowId) } catch { /* pop-up blocked — the navigate below still routes */ }
       crossWindow.post({ type: 'navigate', targetRef: partnerRef, linkId })
-    } else if (!detached) {
-      pendingOpenJump.current = { ref: partnerRef, linkId }
-      const title = partnerRef.split('/').pop() ?? partnerRef
-      const id = tabs.openTab('doc', partnerRef, title)
-      panes.show(id, { at, keep })
-    } else {
+  } else if (!detached) {
+    pendingOpenJump.current = { ref: partnerRef, linkId }
+    const title = partnerRef.split('/').pop() ?? partnerRef
+    const id = tabs.openTab('doc', partnerRef, title)
+    if (panes.panes.length >= panes.maxShown) {
+      const canvasPane = panes.panes.find((p) => p.kind === 'canvas')
+      if (canvasPane && canvasPane.tabId !== keep && !panes.isPinned(canvasPane.tabId)) panes.park(canvasPane.tabId)
+    }
+    panes.show(id, { at, keep })
+  } else {
       crossWindow.post({ type: 'open-entity', kind: 'doc', ref: partnerRef, linkId })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -385,6 +468,11 @@ export function App({
     if (!model) return false
     const link = (paneLinks[ref] ?? []).find((l) => l.id === linkId)
     if (!link) return false
+    const region = firstPageRectRegion(link.anchor)
+    if (region) {
+      setRegionJump(pane.tabId, { pageIndex: region.pageIndex, rect: region.rect, nonce: ++jumpNonce.current })
+      return true
+    }
     const r = resolveAnchor(link.anchor, model.doc.text)
     if (!r) return false
     setConnJump(pane.tabId, { start: r.start, end: r.end, nonce: ++jumpNonce.current })
@@ -395,11 +483,16 @@ export function App({
   // Receiver-side resolution for card→source (Task 8). Unlike the linkId path, the message carries
   // the SOURCE doc's OWN anchor (the excerpt was lifted from `ref`), so it resolves directly in this
   // pane's loaded text. Jump whichever local pane holds `ref` to that range. Returns true if jumped.
-  const jumpPaneToAnchor = useCallback((ref: string, anchor: Anchor): boolean => {
-    const pane = docPaneForRef(ref)
-    if (!pane) return false
-    const model = docModelByTab.get(pane.tabId)
-    if (!model) return false
+const jumpPaneToAnchor = useCallback((ref: string, anchor: Anchor): boolean => {
+ const pane = docPaneForRef(ref)
+ if (!pane) return false
+ const region = firstPageRectRegion(anchor)
+ if (region) {
+  setRegionJump(pane.tabId, { pageIndex: region.pageIndex, rect: region.rect, nonce: ++jumpNonce.current })
+  return true
+ }
+ const model = docModelByTab.get(pane.tabId)
+ if (!model) return false
     const r = resolveAnchor(anchor, model.doc.text)
     if (!r) return false
     setConnJump(pane.tabId, { start: r.start, end: r.end, nonce: ++jumpNonce.current })
@@ -424,20 +517,45 @@ export function App({
       if ((paneLinks[p.ref] ?? []).some((l) => l.id === id)) holders.push({ idx, tabId: p.tabId })
     })
     if (holders.length === 0) return
+    const jumpAnchorInPane = (pane: PaneModel, anchor: Anchor): void => {
+      const region = firstPageRectRegion(anchor)
+      if (region) {
+        setRegionJump(pane.tabId, { pageIndex: region.pageIndex, rect: region.rect, nonce })
+        return
+      }
+      const text = docModelByTab.get(pane.tabId)?.doc.text ?? ''
+      const r = resolveAnchor(anchor, text)
+      if (r) setConnJump(pane.tabId, { start: r.start, end: r.end, nonce })
+    }
+    if (holders.length === 1) {
+      const pane = docPanes[holders[0].idx]
+      const sameDocLinks = (paneLinks[pane.ref] ?? []).filter((l) => l.id === id && l.otherDocRef === pane.ref)
+      if (sameDocLinks.length >= 2) {
+        const targets =
+          toEnd === 'both' ? [sameDocLinks[0], sameDocLinks[1]] : toEnd === 'from' ? [sameDocLinks[0]] : [sameDocLinks[1]]
+        for (const target of targets) jumpAnchorInPane(pane, target.anchor)
+        return
+      }
+    }
 
     const plan = planLinkNav(holders, toEnd, panes.maxShown)
     const jump = (pane: PaneModel): void => {
       const link = (paneLinks[pane.ref] ?? []).find((l) => l.id === id)
-      const text = docModelByTab.get(pane.tabId)?.doc.text ?? ''
       if (!link) return
-      const r = resolveAnchor(link.anchor, text)
-      if (r) setConnJump(pane.tabId, { start: r.start, end: r.end, nonce })
+      jumpAnchorInPane(pane, link.anchor)
     }
     for (const idx of plan.jump) jump(docPanes[idx])
     if (plan.follow) {
       const holder = docPanes[plan.follow.holderIdx]
       const link = (paneLinks[holder.ref] ?? []).find((l) => l.id === id)
-      if (link) followLinkCrossWindow(link.otherDocRef, link.id, plan.follow.at, holder.tabId)
+      const holderPaneIdx = panes.panes.findIndex((p) => p.tabId === holder.tabId)
+      const openAt =
+        holderPaneIdx >= 0
+          ? plan.follow.at > plan.follow.holderIdx
+            ? holderPaneIdx + 1
+            : holderPaneIdx
+          : plan.follow.at
+      if (link) followLinkCrossWindow(link.otherDocRef, link.id, openAt, holder.tabId)
     }
   }, [panes.panes, panes.maxShown, paneLinks, docModelByTab, followLinkCrossWindow])
 
@@ -604,6 +722,21 @@ export function App({
   // (jsdom has no layout → every rect is 0 → returns {0,0}, which still renders a path;
   // a truly unresolved anchor → null → skipped. Coordinate accuracy is smoke-only.)
   const pointForAnchor = (article: HTMLElement | null, anchor: Anchor, docText: string): Pt | null => {
+    const region = firstPageRectRegion(anchor)
+    if (region) {
+      const row = paneRowRef.current
+      const page = article?.querySelector<HTMLElement>(`[data-pdf-page-index="${region.pageIndex}"]`)
+      if (!row || !article || !page) return null
+      const pageRect = page.getBoundingClientRect()
+      const articleRect = article.getBoundingClientRect()
+      const center = {
+        x: pageRect.left + (region.rect.x + region.rect.w / 2) * pageRect.width,
+        y: pageRect.top + (region.rect.y + region.rect.h / 2) * pageRect.height
+      }
+      if (center.y < articleRect.top || center.y > articleRect.bottom || center.x < articleRect.left || center.x > articleRect.right) return null
+      const rowRect = row.getBoundingClientRect()
+      return { x: center.x - rowRect.left, y: center.y - rowRect.top }
+    }
     return pointForRange(article, resolveAnchor(anchor, docText))
   }
 
@@ -632,6 +765,27 @@ export function App({
     const linksOf = (i: number): Link[] => paneLinks[refOf(i)] ?? []
     const linked: RenderedLink[] = []
     const seen = new Set<string>()
+    // PASS 0 (same-document region links): two records with the same id can live
+    // in one sidecar when linking two captured rectangles from the same PDF.
+    for (let i = 0; i < docPanes.length; i++) {
+      const links = linksOf(i)
+      const byId = new Map<string, Link[]>()
+      for (const link of links) {
+        if (link.otherDocRef !== refOf(i)) continue
+        const group = byId.get(link.id) ?? []
+        group.push(link)
+        byId.set(link.id, group)
+      }
+      for (const [id, group] of byId) {
+        if (group.length < 2) continue
+        const from = pointForAnchor(articles[i] ?? null, group[0].anchor, textOf(i))
+        const to = pointForAnchor(articles[i] ?? null, group[1].anchor, textOf(i))
+        if (from || to) {
+          linked.push({ id, from, to })
+          seen.add(id)
+        }
+      }
+    }
     // PASS 1 (paired arcs): every UNORDERED PAIR (i<j); a link present in both → resolve both ends.
     for (let i = 0; i < docPanes.length; i++) {
       for (let j = i + 1; j < docPanes.length; j++) {
@@ -897,9 +1051,14 @@ export function App({
     //   • another window holds the source → ask it to scroll+flash (navigate{anchor}).
     //   • nobody holds it and there's no local reader (canvas-only / satellite window) → ask the hub
     //     to open it + jump (open-entity{anchor}).
-    const sourcePane = docPaneForRef(card.source)
-    const sourceLocal = sourcePane !== null
-    if (!sourceLocal) {
+ const sourcePane = docPaneForRef(card.source)
+ const sourceLocal = sourcePane !== null
+ const pageRect = firstPageRectRegion(card.anchor)
+ if (sourceLocal && pageRect) {
+  jumpPaneToAnchor(card.source, card.anchor)
+  return
+ }
+ if (!sourceLocal) {
       if (crossWindow.windowHolding('doc', card.source)) {
         crossWindow.post({ type: 'navigate', targetRef: card.source, anchor: card.anchor })
         return
@@ -914,9 +1073,14 @@ export function App({
     // resolve here and flash in this window. (Preserves the existing single-window behavior.)
     // When the source isn't shown, open it BESIDE the canvas pane (at its slot, keeping it) so the
     // click never replaces the canvas the user is looking at.
-    const canvasPos = panes.panes.findIndex((p) => p.kind === 'canvas')
-    const canvasPane = canvasPos >= 0 ? panes.panes[canvasPos] : null
-    const activeDoc = sourcePane
+ const canvasPos = panes.panes.findIndex((p) => p.kind === 'canvas')
+ const canvasPane = canvasPos >= 0 ? panes.panes[canvasPos] : null
+ if (pageRect) {
+  pendingOpenJump.current = { ref: card.source, anchor: card.anchor }
+  await openRef(card.source, canvasPane ? { at: canvasPos, keep: canvasPane.tabId } : undefined)
+  return
+ }
+ const activeDoc = sourcePane
       ? docModelByTab.get(sourcePane.tabId)?.doc ?? null
       : await openRef(card.source, canvasPane ? { at: canvasPos, keep: canvasPane.tabId } : undefined)
     if (!activeDoc) return
@@ -986,7 +1150,7 @@ export function App({
   // color via ExcerptCard's own liveColor ?? card.color logic — this resolver returns undefined
   // when the source doc is open in no pane (no entry) or the annotation isn't found.
   const colorForCard = useCallback(
-    (card: import('../core/canvas/canvas').ExcerptCard): string | undefined => {
+    (card: CanvasExcerptCard): string | undefined => {
       if (!card.sourceAnnotationId) return undefined
       // A synced override (from a doc window over the bus) wins when there's no local doc pane to
       // resolve the live color (Task 8); otherwise fall back to the local pane's annotations. Either
@@ -998,8 +1162,31 @@ export function App({
     },
     [paneAnnotations, cardColorOverrides]
   )
+  const previewUrlForCard = useCallback(
+    (card: CanvasExcerptCard): string | undefined => {
+      return card.previewAssetRef ? previewUrls[card.previewAssetRef] : undefined
+    },
+    [previewUrls]
+  )
 
-  const cv = canvasState.canvas
+const handleRemoveCanvasCard = (id: string): void => {
+ const card = canvasState.canvas?.cards.find((c) => c.id === id)
+ const region = card?.kind === 'excerpt' ? firstPageRectRegion(card.anchor) : null
+ canvasState.removeCard(id)
+ if (!region || !card || card.kind !== 'excerpt') return
+ setRegionJumpByTab((prev) => {
+  let changed = false
+  const next = { ...prev }
+  for (const pane of panes.panes) {
+   if (pane.kind !== 'doc' || pane.ref !== card.source) continue
+   if (!samePageRect(next[pane.tabId], region)) continue
+   next[pane.tabId] = null
+   changed = true
+  }
+  return changed ? next : prev
+ })
+}
+const cv = canvasState.canvas
   const activeTab = tabs.activeTab
   const shownDocPanes = panes.panes.filter((p) => p.kind === 'doc')
   // Split-pane Draw: two LOCAL doc panes side by side (≥2 shown doc panes).
@@ -1011,7 +1198,12 @@ export function App({
   const otherDocWindowOpen = Object.values(crossWindow.presence).some(
     (e) => e.entity?.kind === 'doc' && !localRefs.has(e.entity.ref)
   )
-  const drawAvailable = shownDocPanes.length >= 1 && (splitDrawAvailable || otherDocWindowOpen)
+  const localRegionDrawAvailable =
+    shownDocPanes.length >= 1 &&
+    !!canvasState.canvas?.cards.some(
+      (card) => card.kind === 'excerpt' && localRefs.has(card.source) && !!firstPageRectRegion(card.anchor)
+    )
+  const drawAvailable = shownDocPanes.length >= 1 && (splitDrawAvailable || otherDocWindowOpen || localRegionDrawAvailable)
 
   // Close a tab and drop ALL per-tab bookkeeping. releaseClosed runs BEFORE tabs.closeTab so
   // usePanes' reflow sees the tab gone (C2). Clears docModelByTab / connJumpByTab / lockedTabs and
@@ -1100,6 +1292,10 @@ export function App({
   const focusedPaneNow = panes.panes.find((p) => p.focused) ?? null
   const flashTabId =
     focusedPaneNow?.kind === 'doc' ? focusedPaneNow.tabId : (panes.panes.find((p) => p.kind === 'doc')?.tabId ?? null)
+  const regionAnchorsForRef = (ref: string): PdfRegionAnchor[] =>
+    canvasState.canvas?.cards
+      .filter((card): card is CanvasExcerptCard => card.kind === 'excerpt' && card.source === ref && !!firstPageRectRegion(card.anchor))
+      .map((card) => ({ id: card.id, anchor: card.anchor, region: firstPageRectRegion(card.anchor)! })) ?? []
 
   const renderPane = (p: PaneModel): JSX.Element => {
     if (p.kind === 'canvas') {
@@ -1122,13 +1318,14 @@ export function App({
           onSetNote={canvasState.setCardNote}
           onCardClick={(id) => void handleCardClick(id)}
           onSetViewport={canvasState.setViewport}
-          onRemoveCard={canvasState.removeCard}
+onRemoveCard={handleRemoveCanvasCard}
           onResizeCard={canvasState.resizeCard}
           onAddConnection={canvasState.addConnection}
-          onRemoveConnection={canvasState.removeConnection}
-          onSetConnectionLabel={canvasState.setConnectionLabel}
-          colorFor={colorForCard}
-        />
+            onRemoveConnection={canvasState.removeConnection}
+            onSetConnectionLabel={canvasState.setConnectionLabel}
+            colorFor={colorForCard}
+            previewUrlFor={previewUrlForCard}
+          />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>Loading…</div>
       )
@@ -1153,8 +1350,10 @@ export function App({
         tabId={p.tabId}
         platform={platform}
         projectId={projectId ?? ''}
-        flashRange={p.tabId === flashTabId ? flashRange : null}
-        connectionJump={connJumpByTab[p.tabId] ?? null}
+            flashRange={p.tabId === flashTabId ? flashRange : null}
+            flashPageRect={regionJumpByTab[p.tabId] ?? null}
+            regionAnchors={regionAnchorsForRef(p.ref)}
+            connectionJump={connJumpByTab[p.tabId] ?? null}
         connectMode={connectMode}
         onConnectPick={handleConnectPick}
         onSendExcerpt={handleSendExcerpt}
@@ -1301,8 +1500,8 @@ export function App({
         {drawAvailable && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <button
-              aria-label={connectMode ? 'Exit Draw mode' : 'Draw: click a passage in each pane to link them'}
-              title="Draw: click a word or a highlight in each pane to link them"
+              aria-label={connectMode ? 'Exit Draw mode' : 'Draw: click a word, highlight, or region to link them'}
+              title="Draw: click a word, highlight, or captured region to link them"
               onClick={toggleDraw}
               style={{
                 display: 'inline-flex',
@@ -1319,7 +1518,7 @@ export function App({
               <Icon name="link" size={14} /> Draw
             </button>
             {connectMode && pendingConnStart && (
-              <span style={{ fontSize: 'var(--text-xs)', fontFamily: 'var(--font-sans)', color: 'var(--muted)' }}>Click a word in the other pane…</span>
+              <span style={{ fontSize: 'var(--text-xs)', fontFamily: 'var(--font-sans)', color: 'var(--muted)' }}>Click another endpoint…</span>
             )}
           </span>
         )}

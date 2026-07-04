@@ -2,6 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { JSX } from 'react'
 import type { PdfParseResult } from '../../core/pdf/liteparse'
 import type { RunOffset } from '../../core/pdf/pdfLayout'
+import type { Anchor } from '../../core/anchor/anchor'
+import type { PageRectRegion } from '../../core/anchor/region'
+import { clientPointsToPageRectRegion, denormalizePageRect } from '../../core/anchor/region'
 import type { ResolvedAnnotation } from '../annotations/useAnnotations'
 import { rangeFromSelection, offsetOf } from '../annotations/selection'
 import type { ExcerptDropPayload } from '../canvas/excerptDrag'
@@ -19,6 +22,13 @@ const OVERSCAN = 1
 const PADDING = 16
 /** Backstop on cached fallback page rasters — bounds object-URL memory (cost is naturally tiny). */
 const MAX_FALLBACK_PAGES = 12
+const MIN_CAPTURE_SIZE = 3
+
+export interface PdfRegionAnchor {
+  id: string
+  anchor: Anchor
+  region: PageRectRegion
+}
 
 /** Renders a single page's bitmap into the given canvas at the given CSS width. */
 export type RenderPage = (
@@ -45,6 +55,9 @@ interface Props {
   onSetNote: (id: string, note: string) => void
   onSetColor: (id: string, color: string) => void
   onDelete: (id: string) => void
+  isPinnedAnnotation?: (annotationId: string) => boolean
+  atCap?: boolean
+  onTogglePinAnnotation?: (ann: ResolvedAnnotation) => void
   /** The document ref + text, so a highlight can be sent to a canvas as an excerpt. */
   sourceRef?: string
   docText?: string
@@ -54,8 +67,13 @@ interface Props {
   connectMode?: boolean
   /** Called with the synthetic React mouse event when a click fires in Connect mode. */
   onConnectClick?: (e: React.MouseEvent) => void
+  regionAnchors?: PdfRegionAnchor[]
+  onConnectRegion?: (anchor: Anchor, region: PageRectRegion) => void
   /** A fresh object per navigate; scrolls the target page into view + flashes its quads. */
-  flashRange?: { start: number; end: number } | null
+ flashRange?: { start: number; end: number } | null
+ captureRegionMode?: boolean
+onCaptureRegion?: (anchor: Anchor, snapshot: string, previewBlob?: Blob) => void
+ flashPageRect?: { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null
   /** In-document search hits (find-in-page); rendered as a wash under the text layer. */
   searchMatches?: SearchMatch[]
   /** The currently-active search hit, if any; rendered with an accent outline and scrolled into view. */
@@ -145,41 +163,127 @@ function PdfTextLayer({ runs, zoom }: { runs: RunOffset[]; zoom: number }): JSX.
 
 type FallbackState = { status: 'loading' } | { status: 'ready'; url: string } | { status: 'error' }
 
-/** Fills the page box (same geometry as the <canvas>) with the server raster, or a status note. */
+/** Fills page box (same geometry as <canvas>) with server raster, or status note. */
 function PdfFallbackImage({ state, pageIndex }: { state?: FallbackState; pageIndex: number }): JSX.Element {
-  const base: React.CSSProperties = { position: 'absolute', inset: 0, width: '100%', height: '100%' }
-  const note: React.CSSProperties = {
-    ...base,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontFamily: 'sans-serif',
-    fontSize: 13,
-    textAlign: 'center',
-    padding: 16
-  }
-  if (state?.status === 'ready') {
-    return (
-      <img
-        data-testid={`pdf-fallback-${pageIndex}`}
-        src={state.url}
-        alt=""
-        style={{ ...base, objectFit: 'contain' }}
-      />
-    )
-  }
-  if (state?.status === 'error') {
-    return (
-      <div data-testid={`pdf-fallback-error-${pageIndex}`} style={{ ...note, color: '#666' }}>
-        This page couldn't be rendered.
-      </div>
-    )
-  }
+ const base: React.CSSProperties = { position: 'absolute', inset: 0, width: '100%', height: '100%' }
+ const note: React.CSSProperties = {
+  ...base,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontFamily: 'sans-serif',
+  fontSize: 13,
+  textAlign: 'center',
+  padding: 16
+ }
+ if (state?.status === 'ready') {
+  return <img data-testid={`pdf-fallback-${pageIndex}`} src={state.url} alt="" style={{ ...base, objectFit: 'contain' }} />
+ }
+ if (state?.status === 'error') {
   return (
-    <div data-testid={`pdf-fallback-loading-${pageIndex}`} style={{ ...note, color: '#999' }}>
-      Rendering page…
-    </div>
+   <div data-testid={`pdf-fallback-error-${pageIndex}`} style={{ ...note, color: '#666' }}>
+    This page couldn't be rendered.
+   </div>
   )
+ }
+ return (
+  <div data-testid={`pdf-fallback-loading-${pageIndex}`} style={{ ...note, color: '#999' }}>
+   Rendering page…
+  </div>
+ )
+}
+
+function pageBoundsFor(
+ el: HTMLElement,
+ page: { width: number; height: number },
+ zoom: number
+): DOMRect | { left: number; top: number; width: number; height: number } {
+ const bounds = el.getBoundingClientRect()
+ if (bounds.width > 0 && bounds.height > 0) return bounds
+ return { left: bounds.left, top: bounds.top, width: page.width * zoom, height: page.height * zoom }
+}
+
+function pointerClientPoint(e: React.PointerEvent): { x: number; y: number } {
+ const native = e.nativeEvent as PointerEvent
+ return {
+  x: Number.isFinite(e.clientX) ? e.clientX : native.clientX ?? native.pageX,
+  y: Number.isFinite(e.clientY) ? e.clientY : native.clientY ?? native.pageY
+ }
+}
+
+function PageRectOutline({
+ page,
+ rect,
+ zoom,
+ testId,
+ tone = 'flash'
+}: {
+ page: { width: number; height: number }
+ rect: PageRectRegion['rect']
+ zoom: number
+ testId: string
+  tone?: 'flash' | 'preview' | 'region'
+}): JSX.Element {
+  const box = denormalizePageRect(rect, page)
+  const isPreview = tone === 'preview'
+  const isRegion = tone === 'region'
+ return (
+  <div
+   data-testid={testId}
+   style={{
+    position: 'absolute',
+    left: box.x * zoom,
+    top: box.y * zoom,
+    width: box.w * zoom,
+    height: box.h * zoom,
+        border: isPreview ? '2px dashed var(--accent)' : isRegion ? '2px solid var(--accent)' : '3px solid var(--accent)',
+        background: isPreview ? 'rgba(14, 165, 233, 0.12)' : isRegion ? 'rgba(14, 165, 233, 0.08)' : 'rgba(14, 165, 233, 0.18)',
+    boxShadow: tone === 'preview' ? undefined : '0 0 0 2px rgba(255,255,255,0.9)',
+    pointerEvents: 'none',
+    zIndex: 4
+   }}
+  />
+ )
+}
+
+function intersects(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }): boolean {
+ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+function textForPageRect(region: PageRectRegion, runIndex: RunOffset[], page: { width: number; height: number }): string {
+ const rect = denormalizePageRect(region.rect, page)
+ const hits = runIndex
+  .filter((run) => run.pageIndex === region.pageIndex && intersects(rect, run))
+  .sort((a, b) => (Math.abs(a.y - b.y) > Math.max(a.h, b.h) ? a.y - b.y : a.x - b.x))
+ if (hits.length === 0) return ''
+ const lines: RunOffset[][] = []
+ for (const run of hits) {
+  const last = lines[lines.length - 1]
+  if (!last || Math.abs(last[0].y - run.y) > Math.max(last[0].h, run.h)) lines.push([run])
+  else last.push(run)
+ }
+ return lines.map((line) => line.map((run) => run.text).join(' ').replace(/\s+/g, ' ').trim()).join('\n')
+}
+
+function cropPageCanvas(pageEl: HTMLElement, region: PageRectRegion): Promise<Blob | undefined> {
+if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)) return Promise.resolve(undefined)
+const pageCanvas = pageEl.querySelector('canvas')
+if (!pageCanvas || pageCanvas.width === 0 || pageCanvas.height === 0) return Promise.resolve(undefined)
+ const sx = Math.max(0, Math.floor(region.rect.x * pageCanvas.width))
+ const sy = Math.max(0, Math.floor(region.rect.y * pageCanvas.height))
+ const sw = Math.max(1, Math.floor(region.rect.w * pageCanvas.width))
+const sh = Math.max(1, Math.floor(region.rect.h * pageCanvas.height))
+const out = document.createElement('canvas')
+out.width = sw
+out.height = sh
+try {
+ const ctx = out.getContext('2d')
+ if (!ctx) return Promise.resolve(undefined)
+ ctx.drawImage(pageCanvas, sx, sy, sw, sh, 0, 0, sw, sh)
+ return new Promise((resolve) => out.toBlob((blob) => resolve(blob ?? undefined), 'image/png'))
+} catch {
+ return Promise.resolve(undefined)
+}
 }
 
 export function PdfPageView({
@@ -194,13 +298,21 @@ export function PdfPageView({
   onSetNote,
   onSetColor,
   onDelete,
+  isPinnedAnnotation = () => false,
+  atCap = false,
+  onTogglePinAnnotation,
   sourceRef,
   docText,
   onSendExcerpt,
   connectMode,
   onConnectClick,
+  regionAnchors = [],
+  onConnectRegion,
   flashRange,
-  searchMatches = [],
+ captureRegionMode = false,
+ onCaptureRegion,
+ flashPageRect,
+ searchMatches = [],
   activeMatch = null,
   onZoomIn,
   onZoomOut
@@ -213,7 +325,14 @@ export function PdfPageView({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportH, setViewportH] = useState(800)
   const [popover, setPopover] = useState<{ id: string; x: number; y: number } | null>(null)
-  const scale = zoom
+ const scale = zoom
+ const captureEnabled = captureRegionMode && !connectMode
+ const [captureDraft, setCaptureDraft] = useState<{
+  pageIndex: number
+  pointerId: number
+  start: { x: number; y: number }
+  current: { x: number; y: number }
+ } | null>(null)
   // Offsets are computed in scaled (display) px so the window math matches what's on screen.
   const scaledPages = useMemo(
     () => parse.pages.map((p) => ({ index: p.index, width: p.width * scale, height: p.height * scale })),
@@ -345,11 +464,25 @@ export function PdfPageView({
   // A navigate always re-flashes (a fresh flashRange object) — scroll the target page into view
   // even when it is already the active page (setActiveIndex bails on an unchanged index, so the
   // [activeIndex] effect alone would not scroll). Mirrors the clean-DOM Reader scroll-on-flash.
-  useEffect(() => {
-    if (!flashRange) return
-    pageRefs.current[activeIndex]?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flashRange])
+ useEffect(() => {
+  if (!flashRange) return
+  pageRefs.current[activeIndex]?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [flashRange])
+
+ useEffect(() => {
+  if (!flashPageRect) return
+  pageRefs.current[flashPageRect.pageIndex]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+ }, [flashPageRect?.nonce])
+
+ useEffect(() => {
+  if (!captureDraft) return
+  const onKey = (e: KeyboardEvent): void => {
+   if (e.key === 'Escape') setCaptureDraft(null)
+  }
+  window.addEventListener('keydown', onKey)
+  return () => window.removeEventListener('keydown', onKey)
+ }, [captureDraft])
 
   // Stepping to a new active search match scrolls its page into view, independent of activeIndex
   // (a match on the current page still needs a within-page scroll to bring it into frame).
@@ -371,9 +504,69 @@ export function PdfPageView({
     if (scrollRef.current) setScrollTop(scrollRef.current.scrollTop)
   }
 
+  const handleCapturePointerDown = (pageIndex: number, e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!captureEnabled) return
+    e.preventDefault()
+    e.stopPropagation()
+    setPopover(null)
+    window.getSelection()?.removeAllRanges()
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    const point = pointerClientPoint(e)
+    setCaptureDraft({
+      pageIndex,
+      pointerId: e.pointerId,
+      start: point,
+      current: point
+    })
+  }
+
+  const handleCapturePointerMove = (pageIndex: number, e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!captureDraft || captureDraft.pageIndex !== pageIndex || captureDraft.pointerId !== e.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    const point = pointerClientPoint(e)
+    setCaptureDraft((draft) =>
+      draft && draft.pageIndex === pageIndex && draft.pointerId === e.pointerId
+        ? { ...draft, current: point }
+        : draft
+    )
+  }
+
+  const handleCapturePointerUp = (
+    page: { index: number; width: number; height: number },
+    e: React.PointerEvent<HTMLDivElement>
+  ): void => {
+    if (!captureDraft || captureDraft.pageIndex !== page.index || captureDraft.pointerId !== e.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    const draft = captureDraft
+    const point = pointerClientPoint(e)
+    setCaptureDraft(null)
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+    if (Math.abs(point.x - draft.start.x) < MIN_CAPTURE_SIZE || Math.abs(point.y - draft.start.y) < MIN_CAPTURE_SIZE) return
+    const region = clientPointsToPageRectRegion(
+      draft.start,
+      point,
+      pageBoundsFor(e.currentTarget, page, scale),
+      page
+    )
+    const anchor: Anchor = {
+      start: 0,
+      end: 0,
+      exact: '',
+      prefix: '',
+      suffix: '',
+      regions: [region]
+    }
+    const snapshot = textForPageRect(region, runIndex, page) || `PDF region p. ${page.index + 1}`
+    const pageEl = e.currentTarget
+    void cropPageCanvas(pageEl, region).then((previewBlob) => onCaptureRegion?.(anchor, snapshot, previewBlob))
+  }
+
   // A drag-selection creates a new annotation; a plain click inside a highlighted run opens
-  // that annotation's note popover (pins are hidden on PDF — see W6).
+  // that annotation's note popover.
   const handleMouseUp = (e: React.MouseEvent): void => {
+    if (captureEnabled || captureDraft) return
     if (e.detail > 1) return // double/triple-click selects a word — reserved for "send to canvas"
     const sel = window.getSelection()
     const range = rangeFromSelection(sel)
@@ -403,6 +596,23 @@ export function PdfPageView({
     return annotations.find((a) => off >= a.range.start && off < a.range.end) ?? null
   }
 
+  const regionAtPoint = (clientX: number, clientY: number): PdfRegionAnchor | null => {
+    for (let i = regionAnchors.length - 1; i >= 0; i--) {
+      const candidate = regionAnchors[i]
+      const page = parse.pages[candidate.region.pageIndex]
+      const el = pageRefs.current[candidate.region.pageIndex]
+      if (!page || !el) continue
+      const bounds = pageBoundsFor(el, page, scale)
+      const box = denormalizePageRect(candidate.region.rect, page)
+      const left = bounds.left + box.x * scale
+      const top = bounds.top + box.y * scale
+      const right = left + box.w * scale
+      const bottom = top + box.h * scale
+      if (clientX >= left && clientX <= right && clientY >= top && clientY <= bottom) return candidate
+    }
+    return null
+  }
+
   // Double-click / right-click a highlight → send it to the active canvas as an excerpt.
   const sendHit = (a: ResolvedAnnotation): void => {
     if (!onSendExcerpt || !sourceRef) return
@@ -430,7 +640,13 @@ export function PdfPageView({
         if (e.deltaY < 0) onZoomIn?.()
         else if (e.deltaY > 0) onZoomOut?.()
       }}
-      onClickCapture={connectMode ? (e) => { e.preventDefault(); e.stopPropagation(); onConnectClick?.(e) } : undefined}
+      onClickCapture={connectMode ? (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const region = regionAtPoint(e.clientX, e.clientY)
+        if (region) onConnectRegion?.(region.anchor, region.region)
+        else onConnectClick?.(e)
+      } : undefined}
       onMouseUp={handleMouseUp}
       onDoubleClick={(e) => {
         const a = annotationAtPoint(e.clientX, e.clientY)
@@ -455,7 +671,11 @@ export function PdfPageView({
             ref={(el) => {
               pageRefs.current[p.index] = el
             }}
-            data-testid={`pdf-page-${p.index}`}
+          data-testid={`pdf-page-${p.index}`}
+          data-pdf-page-index={p.index}
+            onPointerDown={(e) => handleCapturePointerDown(p.index, e)}
+            onPointerMove={(e) => handleCapturePointerMove(p.index, e)}
+            onPointerUp={(e) => handleCapturePointerUp(p, e)}
             style={{
               position: 'relative',
               overflow: 'hidden',
@@ -497,6 +717,39 @@ export function PdfPageView({
                     still land on the text layer above (highlight layer is pointer-events:none). */}
                 <PdfHighlightLayer boxes={boxesByPage.get(p.index) ?? []} zoom={scale} />
                 <PdfTextLayer runs={byPage.get(p.index) ?? []} zoom={scale} />
+                {regionAnchors
+                  .filter((item) => item.region.pageIndex === p.index)
+                  .map((item) => (
+                    <PageRectOutline
+                      key={item.id}
+                      page={p}
+                      rect={item.region.rect}
+                      zoom={scale}
+                      testId="pdf-region-outline"
+                      tone="region"
+                    />
+                  ))}
+                {captureDraft?.pageIndex === p.index && (
+                  <PageRectOutline
+                    page={p}
+                    rect={
+                      clientPointsToPageRectRegion(
+                        captureDraft.start,
+                        captureDraft.current,
+                        pageRefs.current[p.index]
+                          ? pageBoundsFor(pageRefs.current[p.index]!, p, scale)
+                          : { left: 0, top: 0, width: p.width * scale, height: p.height * scale },
+                        p
+                      ).rect
+                    }
+                    zoom={scale}
+                    testId="pdf-region-preview"
+                    tone="preview"
+                  />
+                )}
+                {flashPageRect?.pageIndex === p.index && (
+                  <PageRectOutline page={p} rect={flashPageRect.rect} zoom={scale} testId="pdf-region-flash" />
+                )}
               </>
             )}
           </div>
@@ -514,10 +767,10 @@ export function PdfPageView({
             setPopover(null)
           }}
           onClose={() => setPopover(null)}
-          isPinned={false}
-          atCap={false}
-          onTogglePin={() => {}}
-          showPin={false}
+          isPinned={isPinnedAnnotation(open.id)}
+          atCap={atCap}
+          onTogglePin={() => onTogglePinAnnotation?.(open)}
+          showPin={!!onTogglePinAnnotation}
         />
       )}
     </div>
