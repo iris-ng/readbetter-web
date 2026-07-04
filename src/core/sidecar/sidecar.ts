@@ -1,4 +1,4 @@
-import { Anchor } from '../anchor/anchor'
+import { Anchor, isValidAnchorShape } from '../anchor/anchor'
 import { Link, isValidLink } from '../link/link'
 
 export const SCHEMA_VERSION = 3
@@ -51,18 +51,6 @@ export function emptySidecar(documentId: string, sourceHash: string): Sidecar {
 
 export function serializeSidecar(sidecar: Sidecar): string {
   return JSON.stringify(sidecar, null, 2)
-}
-
-function isValidAnchorShape(anc: unknown): anc is Anchor {
-  if (typeof anc !== 'object' || anc === null) return false
-  const a = anc as Record<string, unknown>
-  return (
-    typeof a.start === 'number' &&
-    typeof a.end === 'number' &&
-    typeof a.exact === 'string' &&
-    typeof a.prefix === 'string' &&
-    typeof a.suffix === 'string'
-  )
 }
 
 function isValidAnnotation(a: unknown): a is Annotation {

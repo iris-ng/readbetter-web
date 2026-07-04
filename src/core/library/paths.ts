@@ -25,6 +25,14 @@ export function sidecarPath(home: string, projectId: string, hash: string): stri
 export function canvasesDir(home: string, projectId: string): string {
   return join(projectDir(home, projectId), 'canvases')
 }
+
+export function canvasAssetsDir(home: string, projectId: string): string {
+  return join(projectDir(home, projectId), 'canvas-assets')
+}
+
+export function canvasPreviewsDir(home: string, projectId: string): string {
+  return join(canvasAssetsDir(home, projectId), 'previews')
+}
 export function indexPath(home: string, projectId: string): string {
   return join(projectDir(home, projectId), 'index.json')
 }

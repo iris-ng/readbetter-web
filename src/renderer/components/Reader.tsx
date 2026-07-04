@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { DocumentModel, Section } from '../../core/model/document'
 import { HighlightRange } from '../../core/anchor/segment'
+import { createAnchor, type Anchor } from '../../core/anchor/anchor'
+import { clientPointsToDomRectRegion, denormalizePageRect, type PageRectRegion } from '../../core/anchor/region'
 import { planCompare, positionFractions, PinnedRange } from '../../core/compare/squeeze'
 import { Pin } from '../compare/usePins'
 import { ResolvedAnnotation } from '../annotations/useAnnotations'
@@ -42,10 +44,75 @@ interface ReaderProps {
   searchMatches?: SearchMatch[]
   /** The currently-selected search hit (from searchMatches); scrolled into view when it changes. */
   activeMatch?: SearchMatch | null
+  captureRegionMode?: boolean
+  onCaptureRegion?: (anchor: Anchor, snapshot: string) => void
+  flashPageRect?: { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null
 }
 
 function rangesFor(annotations: ResolvedAnnotation[]): HighlightRange[] {
   return annotations.map((a) => ({ start: a.range.start, end: a.range.end, id: a.id, color: a.color }))
+}
+
+function pointerClientPoint(e: React.PointerEvent): { x: number; y: number } {
+  const native = e.nativeEvent as PointerEvent
+  return {
+    x: Number.isFinite(e.clientX) ? e.clientX : native.clientX ?? native.pageX,
+    y: Number.isFinite(e.clientY) ? e.clientY : native.clientY ?? native.pageY
+  }
+}
+
+function readerPageFor(article: HTMLElement | null): { width: number; height: number } {
+  if (!article) return { width: 1, height: 1 }
+  const bounds = article.getBoundingClientRect()
+  return {
+    width: Math.max(1, article.scrollWidth, bounds.width),
+    height: Math.max(1, article.scrollHeight, bounds.height)
+  }
+}
+
+function ReaderRegionOutline({
+  rect,
+  page,
+  testId,
+  tone = 'flash'
+}: {
+  rect: PageRectRegion['rect']
+  page: { width: number; height: number }
+  testId: string
+  tone?: 'flash' | 'preview'
+}): JSX.Element {
+  const box = denormalizePageRect(rect, page)
+  const isPreview = tone === 'preview'
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        position: 'absolute',
+        left: box.x,
+        top: box.y,
+        width: box.w,
+        height: box.h,
+        border: `2px ${isPreview ? 'dashed' : 'solid'} var(--accent)`,
+        background: isPreview ? 'rgba(14, 165, 233, 0.08)' : 'rgba(14, 165, 233, 0.18)',
+        boxShadow: '0 0 0 2px rgba(255,255,255,0.9)',
+        pointerEvents: 'none',
+        zIndex: 9,
+        borderRadius: 4
+      }}
+    />
+  )
+}
+
+function rectFromClientPoints(start: { x: number; y: number }, end: { x: number; y: number }): DOMRect {
+  const left = Math.min(start.x, end.x)
+  const top = Math.min(start.y, end.y)
+  const right = Math.max(start.x, end.x)
+  const bottom = Math.max(start.y, end.y)
+  return new DOMRect(left, top, right - left, bottom - top)
+}
+
+function intersectsRect(a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 }
 
 export function Reader({
@@ -70,13 +137,22 @@ export function Reader({
   connectMode,
   onConnectClick,
   searchMatches = [],
-  activeMatch = null
+  activeMatch = null,
+  captureRegionMode = false,
+  onCaptureRegion,
+  flashPageRect = null
 }: ReaderProps): JSX.Element {
   const refs = useRef<Array<HTMLElement | null>>([])
   const articleRef = useRef<HTMLElement | null>(null)
+  const [captureDraft, setCaptureDraft] = useState<{
+    pointerId: number
+    start: { x: number; y: number }
+    current: { x: number; y: number }
+  } | null>(null)
   const [popover, setPopover] = useState<{ id: string; x: number; y: number } | null>(null)
   const [chooser, setChooser] = useState<{ ids: string[]; x: number; y: number } | null>(null)
   const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set())
+  const captureEnabled = captureRegionMode && !connectMode && !compareActive
   // Search hits render under annotations (annotations stay the clickable "top" on overlap); the
   // active hit carries a distinct id so SectionView can style/target it separately.
   const searchRanges: HighlightRange[] = searchMatches.map((m) => ({
@@ -111,6 +187,12 @@ export function Reader({
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [flashRange])
 
+  useEffect(() => {
+    if (!flashPageRect) return
+    const el = articleRef.current?.querySelector('[data-testid="reader-region-flash"]')
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [flashPageRect?.nonce])
+
   // Scroll the active search match into view when it changes (mirrors the flash scroll above).
   useEffect(() => {
     if (!activeMatch) return
@@ -139,6 +221,7 @@ export function Reader({
   }, [doc])
 
   const handleMouseUp = (e: React.MouseEvent): void => {
+    if (captureEnabled || captureDraft) return
     if (compareActive) return // Compare Mode is read-only: no selection-to-create.
     if (e.detail > 1) return // double/triple-click selects a word — reserved for "send to canvas"
     const range = rangeFromSelection(window.getSelection())
@@ -146,6 +229,74 @@ export function Reader({
       onCreateRange(range)
       window.getSelection()?.removeAllRanges()
     }
+  }
+
+  const fallbackRegionSnapshot = (): { anchor: Anchor; snapshot: string } => {
+    const section = doc.sections[activeIndex] ?? doc.sections[0]
+    const start = Math.max(0, section?.charStart ?? 0)
+    const end = Math.max(start, Math.min(section?.charEnd ?? doc.text.length, start + 240))
+    const snapshot = doc.text.slice(start, end).trim() || doc.title
+    return { anchor: createAnchor(doc.text, start, end), snapshot }
+  }
+
+  const regionSnapshot = (clientRect: DOMRect): { anchor: Anchor; snapshot: string } => {
+    const hits = Array.from(articleRef.current?.querySelectorAll<HTMLElement>('[data-cs]') ?? [])
+      .map((el) => {
+        const start = Number(el.dataset.cs)
+        const text = el.textContent ?? ''
+        return { el, start, end: start + text.length }
+      })
+      .filter((hit) => Number.isFinite(hit.start) && hit.end > hit.start && intersectsRect(hit.el.getBoundingClientRect(), clientRect))
+      .sort((a, b) => a.start - b.start)
+    if (hits.length === 0) return fallbackRegionSnapshot()
+    const start = Math.max(0, hits[0].start)
+    const end = Math.min(doc.text.length, hits[hits.length - 1].end)
+    const snapshot = doc.text.slice(start, end).trim()
+    if (!snapshot) return fallbackRegionSnapshot()
+    return { anchor: createAnchor(doc.text, start, end), snapshot }
+  }
+
+  const finishCapture = (point: { x: number; y: number }): void => {
+    if (!captureDraft || !articleRef.current || !onCaptureRegion) return
+    const dx = Math.abs(point.x - captureDraft.start.x)
+    const dy = Math.abs(point.y - captureDraft.start.y)
+    if (dx < 4 || dy < 4) return
+    const article = articleRef.current
+    const region = clientPointsToDomRectRegion(captureDraft.start, point, article.getBoundingClientRect(), {
+      scrollLeft: article.scrollLeft,
+      scrollTop: article.scrollTop,
+      scrollWidth: article.scrollWidth,
+      scrollHeight: article.scrollHeight
+    })
+    const { anchor, snapshot } = regionSnapshot(rectFromClientPoints(captureDraft.start, point))
+    onCaptureRegion({ ...anchor, regions: [...(anchor.regions ?? []), region] }, snapshot)
+  }
+
+  const handleCapturePointerDown = (e: React.PointerEvent<HTMLElement>): void => {
+    if (!captureEnabled) return
+    e.preventDefault()
+    e.stopPropagation()
+    window.getSelection()?.removeAllRanges()
+    const point = pointerClientPoint(e)
+    setCaptureDraft({ pointerId: e.pointerId, start: point, current: point })
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+  }
+
+  const handleCapturePointerMove = (e: React.PointerEvent<HTMLElement>): void => {
+    if (!captureDraft || e.pointerId !== captureDraft.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    setCaptureDraft((draft) => (draft ? { ...draft, current: pointerClientPoint(e) } : draft))
+  }
+
+  const handleCapturePointerUp = (e: React.PointerEvent<HTMLElement>): void => {
+    if (!captureDraft || e.pointerId !== captureDraft.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    const point = pointerClientPoint(e)
+    finishCapture(point)
+    setCaptureDraft(null)
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
   }
 
   const toggleGap = (key: number): void =>
@@ -226,6 +377,20 @@ export function Reader({
     : doc.sections.map(renderSection)
 
   const soloPin = pins.length === 1 ? pins[0] : undefined
+  const readerPage = readerPageFor(articleRef.current)
+  const capturePreview = captureDraft
+    ? clientPointsToDomRectRegion(
+        captureDraft.start,
+        captureDraft.current,
+        articleRef.current?.getBoundingClientRect() ?? { left: 0, top: 0, width: readerPage.width, height: readerPage.height },
+        {
+          scrollLeft: articleRef.current?.scrollLeft ?? 0,
+          scrollTop: articleRef.current?.scrollTop ?? 0,
+          scrollWidth: readerPage.width,
+          scrollHeight: readerPage.height
+        }
+      )
+    : null
 
   return (
     <article
@@ -234,10 +399,20 @@ export function Reader({
       data-pane-content
       data-reattaching={reattaching ? 'true' : undefined}
       onMouseUp={handleMouseUp}
+      onPointerDown={handleCapturePointerDown}
+      onPointerMove={handleCapturePointerMove}
+      onPointerUp={handleCapturePointerUp}
+      onPointerCancel={() => setCaptureDraft(null)}
       onClickCapture={connectMode ? (e) => { e.preventDefault(); e.stopPropagation(); onConnectClick?.(e) } : undefined}
-      style={{ flex: 1, overflowY: 'auto', padding: '0 24px', fontSize: 'var(--text-base)', lineHeight: 'var(--leading-relaxed)' }}
+      style={{ position: 'relative', flex: 1, overflowY: 'auto', padding: '0 24px', fontSize: 'var(--text-base)', lineHeight: 'var(--leading-relaxed)', cursor: captureEnabled ? 'crosshair' : undefined }}
     >
       {body}
+      {capturePreview && (
+        <ReaderRegionOutline rect={capturePreview.rect} page={readerPage} testId="reader-region-preview" tone="preview" />
+      )}
+      {flashPageRect?.pageIndex === 0 && (
+        <ReaderRegionOutline rect={flashPageRect.rect} page={readerPage} testId="reader-region-flash" />
+      )}
       {soloPin && (
         <AnchorTab
           passageText={doc.text.slice(soloPin.resolvedRange.start, soloPin.resolvedRange.end)}

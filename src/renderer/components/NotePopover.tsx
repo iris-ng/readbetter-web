@@ -3,6 +3,19 @@ import { Icon } from './Icon'
 import { ResolvedAnnotation } from '../annotations/useAnnotations'
 import { PALETTE } from '../annotations/palette'
 
+const POPOVER_MARGIN = 8
+const POPOVER_WIDTH = 220
+const POPOVER_ESTIMATED_HEIGHT = 180
+
+function clampPopoverPosition(x: number, y: number): { left: number; top: number } {
+  const maxLeft = Math.max(POPOVER_MARGIN, window.innerWidth - POPOVER_WIDTH - POPOVER_MARGIN)
+  const maxTop = Math.max(POPOVER_MARGIN, window.innerHeight - POPOVER_ESTIMATED_HEIGHT - POPOVER_MARGIN)
+  return {
+    left: Math.min(Math.max(x, POPOVER_MARGIN), maxLeft),
+    top: Math.min(Math.max(y, POPOVER_MARGIN), maxTop)
+  }
+}
+
 export function NotePopover({
   annotation,
   x,
@@ -30,6 +43,7 @@ export function NotePopover({
   showPin?: boolean
 }): JSX.Element {
   const pinDisabled = atCap && !isPinned
+  const { left, top } = clampPopoverPosition(x, y)
   return (
     <div
       role="dialog"
@@ -37,12 +51,15 @@ export function NotePopover({
       className="rb-card"
       style={{
         position: 'fixed',
-        left: x,
-        top: y,
+        left,
+        top,
         zIndex: 10,
         boxShadow: 'var(--shadow-md)',
         padding: 8,
-        width: 220
+        width: POPOVER_WIDTH,
+        maxHeight: `calc(100vh - ${POPOVER_MARGIN * 2}px)`,
+        overflowY: 'auto',
+        boxSizing: 'border-box'
       }}
     >
       <textarea

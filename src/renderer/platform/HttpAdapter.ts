@@ -96,10 +96,27 @@ export class HttpAdapter implements PlatformAdapter {
       body: md,
       keepalive: true
     })
-    if (!res.ok) throw new Error(`writeCanvas failed: ${res.status}`)
-  }
+ if (!res.ok) throw new Error(`writeCanvas failed: ${res.status}`)
+ }
 
-  async relocateProject(id: string, path: string): Promise<ProjectInfo> {
+ async writeCanvasPreview(projectId: string, blob: Blob): Promise<{ ref: string }> {
+ const res = await fetch(`/api/canvas-preview?${q(projectId)}`, {
+ method: 'POST',
+ headers: { 'content-type': 'image/png' },
+ body: blob
+ })
+ if (!res.ok) throw new Error(`writeCanvasPreview failed: ${res.status}`)
+ return (await res.json()) as { ref: string }
+ }
+
+ async readCanvasPreview(projectId: string, ref: string): Promise<Blob | null> {
+ const res = await fetch(`/api/canvas-preview?${q(projectId, ref)}`)
+ if (res.status === 404) return null
+ if (!res.ok) throw new Error(`readCanvasPreview failed: ${res.status}`)
+ return await res.blob()
+ }
+
+ async relocateProject(id: string, path: string): Promise<ProjectInfo> {
     const res = await fetch(`/api/projects/${encodeURIComponent(id)}/locate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -15,7 +15,8 @@ export function CardFrame({
   registerRef,
   onStartConnect,
   onResizeStart,
-  onDelete
+  onDelete,
+  selected = false
 }: {
   id: string
   children: ReactNode
@@ -23,6 +24,7 @@ export function CardFrame({
   onStartConnect: (side: Side, e: React.PointerEvent) => void
   onResizeStart: (e: React.PointerEvent) => void
   onDelete: () => void
+  selected?: boolean
 }): JSX.Element {
   // Affordances (ports, resize grip, delete) stay hidden until the card is hovered, so a card at
   // rest reads as just its content. Hovering a descendant (a port sits visually outside the card
@@ -32,7 +34,7 @@ export function CardFrame({
     <div
       ref={registerRef}
       data-card-id={id}
-      style={{ position: 'relative' }}
+    style={{ position: 'relative', outline: selected ? '2px solid var(--accent)' : undefined, outlineOffset: selected ? 3 : undefined }}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
     >

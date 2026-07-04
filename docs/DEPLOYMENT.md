@@ -54,7 +54,7 @@ Click **+ Add folder**, choose a folder containing PDF or Markdown files, and co
 Use `READBETTER_LIBRARY` or `--library=` with an absolute folder path.
 
 ```bash
-READBETTER_LIBRARY=/path/to/library npm run start:web
+READBETTER_LIBRARY=/home/alice/Papers npm run start:web
 ```
 
 ```bash
@@ -64,7 +64,7 @@ npm run start:web -- --library=/absolute/path/to/folder
 Windows PowerShell:
 
 ```powershell
-$env:READBETTER_LIBRARY = "C:\Path\To\Library"
+$env:READBETTER_LIBRARY = "C:\Users\Alice\Documents\Papers"
 npm run start:web
 ```
 
@@ -110,7 +110,7 @@ The registry at `~/.readbetter/registry.json` is per-machine because it stores a
 Examples:
 
 ```bash
-READBETTER_LIBRARY=/path/to/library READBETTER_PORT=9000 npm run start:web
+READBETTER_LIBRARY=/home/alice/Papers READBETTER_PORT=9000 npm run start:web
 ```
 
 ```bash

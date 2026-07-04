@@ -65,3 +65,16 @@ it('prefers liveColor over the cached card.color for the tint', () => {
   // jsdom normalises #1122ff → rgb(17, 34, 255). liveColor wins, NOT card.color (#ffd54a).
   expect(quote.style.borderLeftColor).toBe('rgb(17, 34, 255)')
 })
+
+it('renders an optional PDF region preview image', () => {
+  const previewCard: ExcerptCardModel = { ...baseCard, previewDataUrl: 'data:image/png;base64,AAAA' }
+  const { container } = render(
+    <ExcerptCard
+      card={previewCard}
+      onClick={noop}
+      onSetNote={noopNote}
+      onPointerDownDrag={noopPointer}
+    />
+  )
+  expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA')
+})

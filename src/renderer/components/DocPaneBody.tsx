@@ -2,9 +2,11 @@ import type { JSX } from 'react'
 import type { PlatformAdapter } from '../platform'
 import type { Loaded } from '../App'
 import type { ExcerptDropPayload } from '../canvas/excerptDrag'
+import type { PageRectRegion } from '../../core/anchor/region'
 import type { Link } from '../../core/link/link'
 import type { LinkPick } from '../annotations/linkPick'
 import type { ResolvedAnnotation } from '../annotations/useAnnotations'
+import type { PdfRegionAnchor } from './PdfPageView'
 import { DocumentPane } from './DocumentPane'
 
 /** Concrete prop shapes mirror DocumentPane's (its DocumentPaneProps is not exported, and the
@@ -16,6 +18,8 @@ export interface DocPaneBodyProps {
   platform: PlatformAdapter
   projectId: string
   flashRange: { start: number; end: number } | null
+  flashPageRect?: { pageIndex: number; rect: PageRectRegion['rect']; nonce: number } | null
+  regionAnchors?: PdfRegionAnchor[]
   connectionJump: { start: number; end: number; nonce: number } | null // from connJumpByTab[tabId]
   connectMode: boolean
   onConnectPick: (docRef: string, pick: LinkPick) => void
@@ -41,6 +45,8 @@ export function DocPaneBody(props: DocPaneBodyProps): JSX.Element {
       platform={props.platform}
       projectId={props.projectId}
       flashRange={props.flashRange}
+      flashPageRect={props.flashPageRect}
+      regionAnchors={props.regionAnchors}
       connectionJump={props.connectionJump}
       connectMode={props.connectMode}
       onConnectPick={props.onConnectPick}

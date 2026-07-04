@@ -1,4 +1,5 @@
 import { Anchor } from '../anchor/anchor'
+import { isDocumentRegion, type DocumentRegion } from '../anchor/region'
 import { slug } from '../model/slug'
 
 export const CANVAS_SCHEMA_VERSION = 1
@@ -22,6 +23,8 @@ export interface ExcerptCard extends CardBase {
   snapshot: string
   note: string
   color?: string
+  previewAssetRef?: string
+  previewDataUrl?: string
   sourceAnnotationId?: string
 }
 export interface NoteCard extends CardBase {
@@ -73,6 +76,13 @@ function str(s: string): string {
   return JSON.stringify(s) // valid YAML double-quoted scalar; escapes quotes/colons/#/newlines
 }
 
+function emitRegion(r: DocumentRegion): string {
+  if (r.kind === 'text-range') {
+    return `{ kind: "text-range", range: { start: ${r.range.start}, end: ${r.range.end} } }`
+  }
+  return `{ kind: "page-rect", pageIndex: ${r.pageIndex}, rect: { x: ${r.rect.x}, y: ${r.rect.y}, w: ${r.rect.w}, h: ${r.rect.h} }, units: "page-normalized", origin: "top-left" }`
+}
+
 function emitAnchor(a: Anchor): string {
   const parts = [
     `start: ${a.start}`,
@@ -87,6 +97,9 @@ function emitAnchor(a: Anchor): string {
       .join(', ')
     parts.push(`page: { quads: [${quads}] }`)
   }
+  if (a.regions) {
+    parts.push(`regions: [${a.regions.map(emitRegion).join(', ')}]`)
+  }
   return `{ ${parts.join(', ')} }`
 }
 
@@ -96,6 +109,8 @@ function emitCard(c: Card): string {
     lines.push(`    source: ${str(c.source)}`)
     lines.push(`    anchor: ${emitAnchor(c.anchor)}`)
     if (c.color !== undefined) lines.push(`    color: ${str(c.color)}`)
+    if (c.previewAssetRef !== undefined) lines.push(`    previewAssetRef: ${str(c.previewAssetRef)}`)
+    if (c.previewDataUrl !== undefined) lines.push(`    previewDataUrl: ${str(c.previewDataUrl)}`)
     if (c.sourceAnnotationId !== undefined) lines.push(`    sourceAnnotationId: ${str(c.sourceAnnotationId)}`)
   }
   lines.push(`    x: ${c.x}`, `    y: ${c.y}`)
@@ -340,6 +355,12 @@ function toAnchor(v: unknown): Anchor {
       })
     }
   }
+  if (a.regions !== undefined) {
+    if (!Array.isArray(a.regions) || !a.regions.every(isDocumentRegion)) {
+      throw new Error('canvas: anchor.regions malformed')
+    }
+    anchor.regions = a.regions
+  }
   return anchor
 }
 
@@ -402,6 +423,8 @@ export function parseCanvas(raw: string): CanvasModel {
       const { snapshot, note } = splitExcerptBlock(block)
       const ex: ExcerptCard = { ...base, kind: 'excerpt', source: string_(rc.source, 'card.source'), anchor: toAnchor(rc.anchor), snapshot, note }
       if (rc.color !== undefined) ex.color = string_(rc.color, 'card.color')
+      if (rc.previewAssetRef !== undefined) ex.previewAssetRef = string_(rc.previewAssetRef, 'card.previewAssetRef')
+      if (rc.previewDataUrl !== undefined) ex.previewDataUrl = string_(rc.previewDataUrl, 'card.previewDataUrl')
       if (rc.sourceAnnotationId !== undefined) ex.sourceAnnotationId = string_(rc.sourceAnnotationId, 'card.sourceAnnotationId')
       return ex
     }

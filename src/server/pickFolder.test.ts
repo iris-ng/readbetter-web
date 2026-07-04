@@ -40,8 +40,8 @@ describe('parseFolderPickerOutput', () => {
 
   it('strips the trailing slash from a POSIX path on darwin/linux', () => {
     // osascript "POSIX path of ..." yields a trailing slash for folders
-    expect(parseFolderPickerOutput('darwin', '/Library/Books/\n')).toBe('/Library/Books')
-    expect(parseFolderPickerOutput('linux', '/srv/readbetter-books/')).toBe('/srv/readbetter-books')
+    expect(parseFolderPickerOutput('darwin', '/Users/abc/Books/\n')).toBe('/Users/abc/Books')
+    expect(parseFolderPickerOutput('linux', '/home/abc/Books/')).toBe('/home/abc/Books')
   })
 
   it('preserves the filesystem root', () => {

@@ -22,24 +22,39 @@ export interface CanvasStudioProps {
   onSetConnectionLabel: (from: string, to: string, label: string) => void
   /** Returns the live annotation color for a card when its source is open in the same window. */
   colorFor?: (card: import('../../core/canvas/canvas').ExcerptCard) => string | undefined
+  previewUrlFor?: (card: import('../../core/canvas/canvas').ExcerptCard) => string | undefined
 }
 
 export function CanvasStudio(props: CanvasStudioProps): JSX.Element {
-  const { canvas, onMoveCard, onCreateNote, onSetNote, onCardClick, onSetViewport, onRemoveCard, onResizeCard, onAddConnection, onRemoveConnection, onSetConnectionLabel, colorFor } = props
+  const { canvas, onMoveCard, onCreateNote, onSetNote, onCardClick, onSetViewport, onRemoveCard, onResizeCard, onAddConnection, onRemoveConnection, onSetConnectionLabel, colorFor, previewUrlFor } = props
   const boardRef = useRef<HTMLDivElement>(null)
   const transformRef = useRef<HTMLDivElement>(null)
   // True while a card drag actually moved, so the click that follows a drag does not also
   // trigger the card's back-link navigation.
-  const draggedRef = useRef(false)
+ const draggedRef = useRef(false)
+ const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
   // Cleanup for an in-progress drag, invoked on unmount so window listeners never leak.
-  const cleanupRef = useRef<(() => void) | null>(null)
-  useEffect(() => () => cleanupRef.current?.(), [])
-  const { x, y, zoom } = canvas.viewport
+ const cleanupRef = useRef<(() => void) | null>(null)
+ useEffect(() => () => cleanupRef.current?.(), [])
+ useEffect(() => {
+  if (!selectedCardId) return
+  const onKey = (e: KeyboardEvent): void => {
+   const target = e.target as HTMLElement | null
+   if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return
+   if (e.key !== 'Delete' && e.key !== 'Backspace') return
+   e.preventDefault()
+   onRemoveCard(selectedCardId)
+   setSelectedCardId(null)
+  }
+  window.addEventListener('keydown', onKey)
+  return () => window.removeEventListener('keydown', onKey)
+ }, [selectedCardId, onRemoveCard])
+ const { x, y, zoom } = canvas.viewport
 
   const sizes = useRef(new Map<string, { w: number; h: number }>())
   const elemId = useRef(new WeakMap<Element, string>())
-  const [, bump] = useState(0)
-  const [rubber, setRubber] = useState<{ path: string } | null>(null)
+ const [, bump] = useState(0)
+ const [rubber, setRubber] = useState<{ path: string } | null>(null)
   // Create the observer lazily during render so it exists before the card ref callbacks fire
   // on the first mount — an effect runs after commit and would miss the initially-rendered cards.
   const roRef = useRef<ResizeObserver | null>(null)
@@ -113,12 +128,13 @@ export function CanvasStudio(props: CanvasStudioProps): JSX.Element {
   }
 
   const handleCardClick = (id: string) => (): void => {
-    if (draggedRef.current) {
-      draggedRef.current = false
-      return
-    }
-    onCardClick(id)
-  }
+ if (draggedRef.current) {
+ draggedRef.current = false
+ return
+ }
+ setSelectedCardId(id)
+ onCardClick(id)
+ }
 
   const startResize = (id: string, e: React.PointerEvent): void => {
     const start = toBoard(e.clientX, e.clientY)
@@ -167,7 +183,8 @@ export function CanvasStudio(props: CanvasStudioProps): JSX.Element {
   const startPan = (e: React.PointerEvent): void => {
     // Pan only when grabbing empty board space — the board itself OR its transform surface
     // (the inner div covers the board, so it, not boardRef, is the real empty-space target).
-    if (e.target !== boardRef.current && e.target !== transformRef.current) return
+ if (e.target !== boardRef.current && e.target !== transformRef.current) return
+ setSelectedCardId(null)
     const sx = e.clientX
     const sy = e.clientY
     const ox = x
@@ -215,16 +232,20 @@ export function CanvasStudio(props: CanvasStudioProps): JSX.Element {
       >
         <ConnectionsLayer views={views} rubber={rubber} />
         {canvas.cards.map((card) => (
-          <div key={card.id} style={{ position: 'absolute', left: card.x, top: card.y }}>
+ <div key={card.id} style={{ position: 'absolute', left: card.x, top: card.y }} onPointerDownCapture={() => setSelectedCardId(card.id)}>
             <CardFrame
               id={card.id}
               registerRef={registerCard(card.id)}
               onStartConnect={(side, e) => startConnect(card.id, side, e)}
               onResizeStart={(e) => startResize(card.id, e)}
-              onDelete={() => onRemoveCard(card.id)}
-            >
+ onDelete={() => {
+ setSelectedCardId((id) => (id === card.id ? null : id))
+ onRemoveCard(card.id)
+ }}
+ selected={selectedCardId === card.id}
+>
               {card.kind === 'excerpt' ? (
-                <ExcerptCard card={card} liveColor={colorFor?.(card)} onClick={handleCardClick(card.id)} onSetNote={(n) => onSetNote(card.id, n)} onPointerDownDrag={startCardDrag(card.id)} />
+                <ExcerptCard card={card} liveColor={colorFor?.(card)} previewUrl={previewUrlFor?.(card)} onClick={handleCardClick(card.id)} onSetNote={(n) => onSetNote(card.id, n)} onPointerDownDrag={startCardDrag(card.id)} />
               ) : (
                 <NoteCard card={card} onSetNote={(n) => onSetNote(card.id, n)} onPointerDownDrag={startCardDrag(card.id)} />
               )}
